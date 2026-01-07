@@ -1,7 +1,4 @@
-# -*- coding: utf-8 -*-
-from __future__ import print_function
-from __future__ import division
-from __future__ import unicode_literals
+
 # The following code block between #START# and #END#
 # generates an error message if this script is called as a shell script.
 # Using a "shebang" instead would fail on Windows.
@@ -28,7 +25,6 @@ import zipfile
 import hashlib
 import getpass
 import argparse
-import codecs
 import io
 import datetime
 import shutil
@@ -46,36 +42,20 @@ from fnmatch import fnmatch
 import email.utils
 import signal
 import psutil
-minPy2 = [2,7]
 minPy3 = [3,8]
 
 if sys.version_info[0] < 3:
-    if sys.version_info[0] < minPy2[0] or sys.version_info[1] < minPy2[1]:
-        print("Your Python version is not supported, please update to 2.7+" )
-        sys.exit(1)
-elif sys.version_info[0] < 4:
-    if sys.version_info[0] < minPy3[0] or sys.version_info[1] < minPy3[1]:
-        print("Your Python version is not supported, please update to 3.8+")
-        sys.exit(1)
+    print("Your Python version is not supported, please update to 3.8+")
+    sys.exit(1)
+elif sys.version_info[0] == 3 and (sys.version_info[1] < minPy3[1]):
+    print("Your Python version is not supported, please update to 3.8+")
+    sys.exit(1)
 
-if sys.version_info[0] < 3:
-    import dateutil #pip package name is python-dateutil
-    import dateutil.parser
-    import pytz
-    import string
-# python 2 / 3 imports
-try:
-    # python 2
-    from Queue import Queue
-    from urlparse import urlparse,unquote,urlunparse,parse_qs
-    from itertools import izip_longest as zip_longest
-    from StringIO import StringIO
-except ImportError:
-    # python 3
-    from queue import Queue
-    from urllib.parse import urlparse, unquote, urlunparse,parse_qs
-    from itertools import zip_longest
-    from io import StringIO
+# python 3 imports
+from queue import Queue
+from urllib.parse import urlparse, unquote, urlunparse, parse_qs
+from itertools import zip_longest
+from io import StringIO
     
 if (platform.system() == "Windows"):
     import ctypes.wintypes
@@ -92,9 +72,7 @@ if not ((platform.system() == "Darwin") or (platform.system() == "Windows")):
     
 
 
-# python 2 / 3 renames
-try: input = raw_input
-except NameError: pass
+
 
 # optional imports
 try:
@@ -102,7 +80,10 @@ try:
 except ImportError:
     def html2text(x): return x
 
-    
+# Import modularized functions
+from modules.download import cmd_download
+from modules.commands import cmd_backup, cmd_verify, cmd_clean, cmd_trash, cmd_clear_partial_downloads
+
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 CREATE_NEW = 0x1    
@@ -210,9 +191,7 @@ universalLineEnd = ''
 storeExtend = 'extend'
 uLongPathPrefix= u"\\\\?\\"
 
-if sys.version_info[0] < 3:
-    storeExtend = 'store'
-    universalLineEnd = 'U'
+
 
 
 DEFAULT_FALLBACK_LANG = 'en'
@@ -424,14 +403,14 @@ class ConditionalWriter(object):
 
             file_changed = not os.path.exists(self._filename)
             if not file_changed:
-                with codecs.open(self._filename, 'r', 'utf-8') as orig:
+                with open(self._filename, 'r', encoding='utf-8') as orig:
                     for (new_chunk, old_chunk) in zip_longest(tmp, orig):
                         if new_chunk != old_chunk:
                             file_changed = True
                             break
 
             if file_changed:
-                with codecs.open(self._filename, 'w', 'utf-8') as overwrite:
+                with open(self._filename, 'w', encoding='utf-8') as overwrite:
                     tmp.seek(0)
                     shutil.copyfileobj(tmp, overwrite)
 
@@ -474,10 +453,7 @@ def slugify(value, allow_unicode=False):
     underscores, or hyphens. Convert to lowercase. Also strip leading and
     trailing whitespace, dashes, and underscores.
     """
-    if (sys.version_info[0] >= 3): #Modification
-        value = str(value)
-    else:  #Modification
-        value=unicode(value)  #Modification
+    value = str(value)
     if allow_unicode:
         value = unicodedata.normalize("NFKC", value)
     else:
@@ -527,7 +503,7 @@ def move_with_increment_on_clash(src,dst,count=0):
 def load_manifest(filepath=MANIFEST_FILENAME):
     info('loading local manifest...')
     try:
-        with codecs.open(filepath, 'r' + universalLineEnd, 'utf-8') as r:
+        with open(filepath, 'r', encoding='utf-8') as r:
 #            ad = r.read().replace('{', 'AttrDict(**{').replace('}', '})')
             ad = r.read()
             compiledregexopen =  re.compile(r"'changelog':.*?'downloads':|({)",re.DOTALL)
@@ -678,7 +654,7 @@ def save_manifest(items,filepath=MANIFEST_FILENAME,update_md5_xml=False,delete_m
                         text = download.gog_data.md5_xml.text
                         #existing_md5s.append(ffname)
                         if (update_md5_xml):
-                            with ConditionalWriter(ffname) as fd_xml:
+                            with open(ffname, 'w', encoding='utf-8') as fd_xml:
                                 fd_xml.write(text)
                         if (delete_md5_xml):
                             del download.gog_data.md5_xml["text"]
@@ -696,7 +672,7 @@ def save_manifest_core_worker(items,filepath,hasManifestPropsItem=False):
     len_adjustment = 0
     if (hasManifestPropsItem):
         len_adjustment = -1
-    with codecs.open(tmp_path, 'w', 'utf-8') as w:
+    with open(tmp_path, 'w', encoding='utf-8') as w:
         print('# {} games'.format(len(items)+len_adjustment), file=w)
         pprint.pprint(items, width=123, stream=w)
     if os.path.exists(bak_path):
@@ -721,10 +697,9 @@ def save_resume_manifest(items):
 def load_resume_manifest(filepath=RESUME_MANIFEST_FILENAME):
     info('loading local resume manifest...')
     try:
-        with codecs.open(filepath, 'r' + universalLineEnd, 'utf-8') as r:
+        with open(filepath, 'r', encoding='utf-8') as r:
             ad = r.read().replace('{', 'AttrDict(**{').replace('}', '})')
-            if (sys.version_info[0] >= 3):
-                ad = re.sub(r"'size': ([0-9]+)L,",r"'size': \1,",ad)
+            ad = re.sub(r"'size': ([0-9]+)L,",r"'size': \1,",ad)
         return eval(ad)
     except IOError:
         return []
@@ -732,12 +707,12 @@ def load_resume_manifest(filepath=RESUME_MANIFEST_FILENAME):
 def save_config_file(items):
     info('saving config...')
     try:
-        with codecs.open(CONFIG_FILENAME, 'w', 'utf-8') as w:
+        with open(CONFIG_FILENAME, 'w', encoding='utf-8') as w:
             print('# {} games'.format(len(items)-1), file=w)
             pprint.pprint(items, width=123, stream=w)
         info('saved config')                        
     except KeyboardInterrupt:
-        with codecs.open(CONFIG_FILENAME, 'w', 'utf-8') as w:
+        with open(CONFIG_FILENAME, 'w', encoding='utf-8') as w:
             print('# {} games'.format(len(items)-1), file=w)
             pprint.pprint(items, width=123, stream=w)
         info('saved resume manifest')            
@@ -746,7 +721,7 @@ def save_config_file(items):
 def load_config_file(filepath=CONFIG_FILENAME):
     info('loading config...')
     try:
-        with codecs.open(filepath, 'r' + universalLineEnd, 'utf-8') as r:
+        with open(filepath, 'r', encoding='utf-8') as r:
             ad = r.read().replace('{', 'AttrDict(**{').replace('}', '})')
             #if (sys.version_info[0] >= 3):
             #    ad = re.sub(r"'size': ([0-9]+)L,",r"'size': \1,",ad)
@@ -989,16 +964,10 @@ def handle_game_updates(olditem, newitem,strict, update_downloads_strict, update
           
             oldUpdateTime = None
             updateTime = None
-            if sys.version_info[0] < 3: #requires external module
-                if newDownload.old_updated is not None:
-                    oldUpdateTime = dateutil.parser.isoparse(newDownload.old_updated) #requires external module
-                if newDownload.updated is not None:
-                    updateTime = dateutil.parser.isoparse(newDownload.updated) 
-            else: #Standardize #Only valid after 3.7 (this will always be in a datetime isoformat so the changes between 3.7 and 3.11 aren't relevant here)
-                if newDownload.old_updated is not None:
-                    oldUpdateTime = datetime.datetime.fromisoformat(newDownload.old_updated)
-                if newDownload.updated is not None:
-                    updateTime = datetime.datetime.fromisoformat(newDownload.updated)
+            if newDownload.old_updated is not None:
+                oldUpdateTime = datetime.datetime.fromisoformat(newDownload.old_updated)
+            if newDownload.updated is not None:
+                updateTime = datetime.datetime.fromisoformat(newDownload.updated)
             newestUpdateTime = None
             newer = False
             if updateTime is None:
@@ -1066,16 +1035,10 @@ def handle_game_updates(olditem, newitem,strict, update_downloads_strict, update
 
             oldUpdateTime = None
             updateTime = None
-            if sys.version_info[0] < 3: #requires external module
-                if newExtra.old_updated is not None:
-                    oldUpdateTime = dateutil.parser.isoparse(newExtra.old_updated) #requires external module
-                if newExtra.updated is not None:
-                    updateTime = dateutil.parser.isoparse(newExtra.updated) 
-            else: #Standardize #Only valid after 3.7 (this will always be in a datetime isoformat so the changes between 3.7 and 3.11 aren't relevant here)
-                if newExtra.old_updated is not None:
-                    oldUpdateTime = datetime.datetime.fromisoformat(newExtra.old_updated)
-                if newExtra.updated is not None:
-                    updateTime = datetime.datetime.fromisoformat(newExtra.updated)
+            if newExtra.old_updated is not None:
+                oldUpdateTime = datetime.datetime.fromisoformat(newExtra.old_updated)
+            if newExtra.updated is not None:
+                updateTime = datetime.datetime.fromisoformat(newExtra.updated)
             newestUpdateTime = None
             newer = False
             if updateTime is None:
@@ -1191,10 +1154,7 @@ def fetch_file_info(d, fetch_md5,save_md5_xml,updateSession):
                     #    warn('Unexpected MD5 Chunk Structure, please report to the maintainer')
                 d.md5 = shelf_etree.attrib['md5']
                 d.raw_updated = shelf_etree.attrib['timestamp']
-                if sys.version_info[0] < 3 :
-                    d.updated = dateutil.parser.isoparse(d.raw_updated).replace(tzinfo=pytz.utc).isoformat() #requires external modules
-                else:
-                    d.updated = datetime.datetime.fromisoformat(d.raw_updated).replace(tzinfo=datetime.timezone.utc).isoformat() #Standardize #Only valid after 3.7 or maybe 3.11 ? #Assumes that timezone is UTC (might actually be GMT +2 (Poland) but even if so UTC is a far more consistent approximation than local time for most of the world)
+                d.updated = datetime.datetime.fromisoformat(d.raw_updated).replace(tzinfo=datetime.timezone.utc).isoformat() #Standardize #Only valid after 3.7 or maybe 3.11 ? #Assumes that timezone is UTC (might actually be GMT +2 (Poland) but even if so UTC is a far more consistent approximation than local time for most of the world)
             except requests.HTTPError as e:
                 if e.response.status_code == 404:
                     warn("no md5 data found for {}".format(d.name))
@@ -1226,10 +1186,7 @@ def fetch_file_info(d, fetch_md5,save_md5_xml,updateSession):
             d.md5_exempt = True
     if d.updated == None:
         d.raw_updated = d.gog_data.headers["last-modified"]
-        if (sys.version_info[0] < 3):
-            d.updated = datetime.datetime.fromtimestamp( email.utils.mktime_tz(email.utils.parsedate_tz( d.raw_updated )), pytz.utc ).isoformat() #Standardize
-        else:
-            d.updated = email.utils.parsedate_to_datetime(d.raw_updated).isoformat() #Standardize
+        d.updated = email.utils.parsedate_to_datetime(d.raw_updated).isoformat() #Standardize
 
 def filter_downloads(out_list, downloads_list, lang_list, os_list,save_md5_xml,updateSession):
     """filters any downloads information against matching lang and os, translates
@@ -1533,9 +1490,6 @@ def check_skip_file(fname, skipfiles):
 
 def process_path(path):
     fpath = path
-    if sys.version_info[0] < 3:
-        if isinstance(fpath, str):
-            fpath = fpath.decode('utf-8')
     fpath = os.path.abspath(fpath)
     raw_fpath = u'\\\\?\\%s' % fpath 
     return raw_fpath   
@@ -1913,11 +1867,11 @@ def makeGOGSession(loginSession=False):
 def save_token(token):
     info('saving token...')
     try:
-        with codecs.open(TOKEN_FILENAME, 'w', 'utf-8') as w:
+        with open(TOKEN_FILENAME, 'w', encoding='utf-8') as w:
             pprint.pprint(token, width=123, stream=w)
         info('saved token')
     except KeyboardInterrupt:
-        with codecs.open(TOKEN_FILENAME, 'w', 'utf-8') as w:
+        with open(TOKEN_FILENAME, 'w', encoding='utf-8') as w:
             pprint.pprint(token, width=123, stream=w)
         info('saved token')            
         raise
@@ -1925,7 +1879,7 @@ def save_token(token):
 def load_token(filepath=TOKEN_FILENAME):
     info('loading token...')
     try:
-        with codecs.open(filepath, 'r' + universalLineEnd, 'utf-8') as r:
+        with open(filepath, 'r', encoding='utf-8') as r:
             ad = r.read().replace('{', 'AttrDict(**{').replace('}', '})')
         return eval(ad)
     except IOError:
@@ -2217,8 +2171,8 @@ def cmd_update(os_list, lang_list, skipknown, updateonly, partial, ids, skipids,
             if urlparse(item.bg_url).path != "":
                 item.bg_urls[item.long_title] = item.bg_url
             item.serial = item_json_data['cdKey']
-            if (sys.version_info[0] >= 3):
-                if (not(item.serial.isprintable())): #Probably encoded in UTF-16
+            if (not(item.serial.isprintable())): #Probably encoded in UTF-16
+                try:
                     pserial = item.serial
                     if (len(pserial) % 2): #0dd
                         pserial=pserial+"\x00" 
@@ -2228,18 +2182,8 @@ def cmd_update(os_list, lang_list, skipknown, updateonly, partial, ids, skipids,
                         item.serial = pserial
                     else:
                         warn('Game serial code is unprintable, storing raw')
-            else:
-                if (not all(c in string.printable for c in  item.serial)):
-                    pserial = item.serial
-                    if (len(pserial) % 2): #0dd
-                        pserial=pserial+"\x00" 
-                    pserial = bytearray(pserial,"UTF-8")
-                    pserial = pserial.decode("UTF-16")
-                    if all(c in string.printable for c in pserial):
-                        pserial = pserial.encode("UTF-8")
-                        item.serial = pserial
-                    else:
-                        warn('Game serial code is unprintable, storing raw')
+                except Exception:
+                     warn('Game serial code is unprintable and decoding failed, storing raw')
             item.serials = AttrDict()
             if item.serial != '':
                 item.serials[item.long_title] = item.serial
@@ -3967,14 +3911,14 @@ def update_self():
     jsonResponse = response.json()
     print(response.headers)
     print(jsonResponse)
-    with codecs.open('updatetest.test', 'w', 'utf-8') as w:
+    with open('updatetest.test', 'w', encoding='utf-8') as w:
         print(response.headers)
         print(jsonResponse, file=w)    
     response = gitSession.get(jsonResponse['tarball_url'],stream="False",timeout=HTTP_TIMEOUT)
     response.raise_for_status()
     rawResponse = response.content
     print(response.headers)
-    with codecs.open('tarballupdatetest.test', 'w', 'utf-8') as w:
+    with open('tarballupdatetest.test', 'w', encoding='utf-8') as w:
         print(response.headers,file=w)
     with open_notrunc('update.tar.gz') as w:    
         w.write(rawResponse)
@@ -3985,14 +3929,14 @@ def update_self():
     jsonResponse = response.json()
     print(response.headers)
     print(jsonResponse)
-    with codecs.open('rollingupdatetest.test', 'w', 'utf-8') as w:
+    with open('rollingupdatetest.test', 'w', encoding='utf-8') as w:
         print(response.headers,file=w)
         print(jsonResponse, file=w)    
     response = gitSession.get(REPO_HOME_URL+"/tarball/master",stream="False",timeout=HTTP_TIMEOUT)        
     response.raise_for_status()    
     rawResponse = response.content
     print(response.headers)
-    with codecs.open('tarballrollingupdatetest.test', 'w', 'utf-8') as w:
+    with open('tarballrollingupdatetest.test', 'w', encoding='utf-8') as w:
         print(response.headers,file=w)
     with open_notrunc('rolling.tar.gz') as w:    
         w.write(rawResponse)
