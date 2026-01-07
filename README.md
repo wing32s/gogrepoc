@@ -26,43 +26,43 @@ Quick Start -- Typical Use Case
 
 * Login to GOG and save your login cookie for later commands. Your login/pass can be specified or be prompted. You generally only need to do this once to create a valid gog-cookies.dat
 
-  ``gogrepoc.py login``
+  ``gogrepoc_new.py login``
 
 * Fetch all new and updated game and bonus information from GOG for items that you own and save into a local manifest file. Run this whenever you want to discover newly added games or game updates.
 
-  ``gogrepoc.py update``
+  ``gogrepoc_new.py update``
 
 * Download the games and bonus files for the OS and languages you want for all items known from the saved manifest file.
 
-  ``gogrepoc.py download``
+  ``gogrepoc_new.py download``
 
 * Verify and report integrity of all downloaded files. Does MD5, zip integrity, and expected filesize verification. This makes sure your game files can actually be read back and are healthy.
 
-  ``gogrepoc.py verify``
+  ``gogrepoc_new.py verify``
 
 Advanced Usage -- Common Tasks
 ----------------
 
 * Add new games from your library to the manifest.
 
-  ``gogrepoc.py update -os windows -lang en de -skipknown``
+  ``gogrepoc_new.py update -os windows -lang en de -skipknown``
 
 * Update games with the updated tag in your libary.
 
-  ``gogrepoc.py update -os windows -lang en de -updateonly``
+  ``gogrepoc_new.py update -os windows -lang en de -updateonly``
 
 * Update one or more specified games in your manifest.
 
-  ``gogrepoc.py update -ids trine_2_complete_story``
+  ``gogrepoc_new.py update -ids trine_2_complete_story``
 
 * Download one or more specified games game in your manifest.
 
-  ``gogrepoc.py download -ids trine_2_complete_story``
+  ``gogrepoc_new.py download -ids trine_2_complete_story``
 
 Commands
 --------
 
-``gogrepoc.py login`` Authenticate with GOG and save the cookie locally in gog-cookies.dat file. This is needed to do
+``gogrepoc_new.py login`` Authenticate with GOG and save the cookie locally in gog-cookies.dat file. This is needed to do
 update or download command. Run this once first before doing update and download.
 
     login [username] [password]
@@ -71,7 +71,7 @@ update or download command. Run this once first before doing update and download
 
 --
 
-``gogrepoc.py update`` Fetch game data and information from GOG.com for the specified operating systems and languages. This collects file game titles, download links, serial numbers, MD5/filesize data and saves the data locally in a manifest file. Manifest is saved in a gog-manifest.dat file
+``gogrepoc_new.py update`` Fetch game data and information from GOG.com for the specified operating systems and languages. This collects file game titles, download links, serial numbers, MD5/filesize data and saves the data locally in a manifest file. Manifest is saved in a gog-manifest.dat file
 
     update [-os [OS [OS ...]]] [-lang [LANG [LANG ...]]] [-skipknown | -updateonly | -id <title>]
     -os [OS [OS ...]]    	operating system(s) (ex. windows linux mac)
@@ -97,7 +97,7 @@ update or download command. Run this once first before doing update and download
 
 --
 
-``gogrepoc.py download`` Use the saved manifest file from an update command, and download all known game items and bonus files.
+``gogrepoc_new.py download`` Use the saved manifest file from an update command, and download all known game items and bonus files.
 
     download [savedir] [-dryrun] [-skipextras] [-skipextras] [-skipgames] [-wait WAIT] [-id <title>]
     savedir      	   directory to save downloads to
@@ -121,7 +121,7 @@ update or download command. Run this once first before doing update and download
 					   Can't be used with -lang
 --
 
-``gogrepoc.py verify`` Check all your game files against the save manifest data, and verify MD5, zip integrity, and
+``gogrepoc_new.py verify`` Check all your game files against the save manifest data, and verify MD5, zip integrity, and
 expected file size. Any missing or corrupt files will be reported.
 
     verify [gamedir] [-skipmd5] [-skipsize] [-skipzip] [-delete]
@@ -151,7 +151,7 @@ expected file size. Any missing or corrupt files will be reported.
 
 --
 
-``gogrepoc.py import`` Search an already existing GOG collection for game item/files, and import them to your
+``gogrepoc_new.py import`` Search an already existing GOG collection for game item/files, and import them to your
 new GOG folder with clean game directory names and file names as GOG has them named on their servers.
 
     import [src_dir] [dest_dir]
@@ -170,7 +170,7 @@ new GOG folder with clean game directory names and file names as GOG has them na
 					   Can't be used with -lang
 --
 
-``gogrepoc.py backup`` Make copies of all known files in manifest file from a source directory to a backup destination directory. Useful for cleaning out older files from your GOG collection.
+``gogrepoc_new.py backup`` Make copies of all known files in manifest file from a source directory to a backup destination directory. Useful for cleaning out older files from your GOG collection.
 
     backup [src_dir] [dest_dir]
     src_dir     	   source directory containing gog items
@@ -190,7 +190,7 @@ new GOG folder with clean game directory names and file names as GOG has them na
 					   Can't be used with -lang
 --
 
-``gogrepoc.py clean`` Clean your games directory of files not known by manifest. Moves files to the !orphaned folder.
+``gogrepoc_new.py clean`` Clean your games directory of files not known by manifest. Moves files to the !orphaned folder.
 
     clean [cleandir] [-dryrun]
     cleandir    root directory containing gog games to be cleaned
@@ -198,7 +198,7 @@ new GOG folder with clean game directory names and file names as GOG has them na
 	
 --
 
-``gogrepoc.py trash`` Permanently remove orphaned files in your game directory.
+``gogrepoc_new.py trash`` Permanently remove orphaned files in your game directory.
 
     trash [gamedir] [-dryrun] [-installersonly] 
     gamedir    		root directory containing gog games
@@ -214,13 +214,11 @@ Other arguments:
 
 Requirements
 ------------
-* Python 2.7 / Python 3.8+
+* Python 3.8+
 * html5lib 0.99999 or later (https://github.com/html5lib/html5lib-python)
 * requests
 * psutil
-Python 2.7 also requires
-* dateutil ( python-dateutil on pip )
-* pytz
+
 I recommend you use `pip` to install the above python modules.
 
   ``pip install html5lib html2text``
@@ -237,10 +235,5 @@ Mac:
 
 TODO
 ----
-* ~~add ability to update and download specific games or new-items only~~
-* ~~add 'clean' command to orphan/remove old or unexpected files to keep your collection clean with only the latest files~~
-* ~~support resuming manifest updating~~
-* ~~add support for incremental manifest updating (ie. only fetch newly added games) rather than fetching entire collection information~~
-* ~~ability to customize/remap default game directory name~~
 * add GOG movie support
 * ... feel free to contact me with ideas or feature requests!
