@@ -24,7 +24,7 @@ Features
 Quick Start -- Typical Use Case
 ----------------
 
-* Login to GOG and save your login cookie for later commands. Your login/pass can be specified or be prompted. You generally only need to do this once to create a valid gog-cookies.dat
+* Login to GOG using browser-based authentication and save your access token locally. The script will open your browser to the GOG login page where you can sign in (including Google/Discord options). You generally only need to do this once; the token will auto-refresh.
 
   ``gogrepoc_new.py login``
 
@@ -62,12 +62,11 @@ Advanced Usage -- Common Tasks
 Commands
 --------
 
-``gogrepoc_new.py login`` Authenticate with GOG and save the cookie locally in gog-cookies.dat file. This is needed to do
-update or download command. Run this once first before doing update and download.
+``gogrepoc_new.py login`` Authenticate with GOG using browser-based authentication and save the access token locally. The script will attempt to open your browser to the GOG login page. After signing in, copy and paste the redirect URL back to the terminal. This is needed before running update or download commands. Run this once first; the token will auto-refresh as needed.
 
-    login [username] [password]
-    username    GOG username/email
-    password    GOG password
+    login
+        Opens browser for GOG authentication. No username/password arguments needed.
+        Supports all GOG login methods including Google/Discord sign-in.
 
 --
 

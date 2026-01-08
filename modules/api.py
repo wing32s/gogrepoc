@@ -7,10 +7,10 @@ import time
 import datetime
 import logging
 import getpass
+import json
 import requests
 import html5lib
 import xml.etree.ElementTree
-import pprint
 import email.utils
 import threading
 from urllib.parse import urlparse, unquote, urlunparse, parse_qs
@@ -55,11 +55,11 @@ def save_token(token, user_id=None):
     info(f'saving token{user_msg}...')
     try:
         with open(token_path, 'w', encoding='utf-8') as w:
-            pprint.pprint(token, width=123, stream=w)
+            json.dump(token, w, indent=2)
         info(f'saved token{user_msg}')
     except KeyboardInterrupt:
         with open(token_path, 'w', encoding='utf-8') as w:
-            pprint.pprint(token, width=123, stream=w)
+            json.dump(token, w, indent=2)
         info(f'saved token{user_msg}')            
         raise
 
@@ -73,9 +73,9 @@ def load_token(filepath=None, user_id=None):
     info(f'loading token{user_msg}...')
     try:
         with open(filepath, 'r', encoding='utf-8') as r:
-            ad = r.read().replace('{', 'AttrDict(**{').replace('}', '})')
-        return eval(ad)
-    except IOError:
+            token_dict = json.load(r)
+        return AttrDict(token_dict)
+    except (IOError, json.JSONDecodeError):
         return {}
 
 # Token renewal lock to prevent concurrent renewal attempts

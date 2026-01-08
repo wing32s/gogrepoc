@@ -60,6 +60,7 @@ RESUME_MANIFEST_FILENAME = 'gog-resume-manifest.dat'
 CONFIG_FILENAME = 'gogrepo.config'
 TOKEN_FILENAME = 'gog-token.dat'
 MD5_DIR_NAME = '!md5'
+MD5_DB = 'gog-md5.db'
 DOWNLOADING_DIR_NAME = '!downloading'
 PROVISIONAL_DIR_NAME = '!provisional'
 ORPHAN_DIR_NAME = '!orphaned'
@@ -88,6 +89,7 @@ LANG_TABLE = {
 VALID_LANG_TYPES = list(LANG_TABLE.keys())
 
 SKIP_MD5_FILE_EXT = ['.zip', '.exe', '.bin', '.dmg', '.sh', '.pkg', '.deb', '.tar.gz', '.pkg.tar.xz', '.rar', '.mp4']
+INSTALLERS_EXT = ['.exe', '.bin', '.dmg', '.pkg', '.sh']
 ORPHAN_DIR_EXCLUDE_LIST = ['!downloads'.lower(), '!downloading'.lower(), '!orphaned'.lower(), '!terraform'.lower(), '!md5'.lower()]
 ORPHAN_FILE_EXCLUDE_LIST = ['gogrepo.py', 'gogrepoc.py', 'gogrepo.config', 'pylru.py', 'pylru.pyc', 'gogrepo.log',
                             'html2text.py', 'html2text.pyc', 'manifest.json', 'manifest.resume', 'token', 'token.json']
@@ -120,6 +122,7 @@ loggingHandler = logging.FileHandler(LOG_FILENAME, 'w', 'utf-8')
 loggingHandler.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s'))
 consoleHandler = logging.StreamHandler(sys.stdout)
 consoleHandler.setFormatter(logging.Formatter('%(message)s'))
+rootLogger.addHandler(loggingHandler)  # Add file handler to actually log to file
 rootLogger.addHandler(consoleHandler)
 rootLogger.setLevel(logging.INFO)
 
@@ -371,7 +374,7 @@ def slugify(value, allow_unicode=False):
     return re.sub(r'[-\s]+', '-', value).strip('-_')
 
 
-# --- Wakelock Classes ---
+# --- Classes to prevent computer going to sleep during large downloads ---
 
 class DBusSystemInhibitor:
     def __init__(self, name, path, interface, method=["Inhibit"]):

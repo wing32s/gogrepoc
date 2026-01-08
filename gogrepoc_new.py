@@ -120,13 +120,13 @@ def add_login_command(subparsers):
     """Add login command arguments"""
     parser = subparsers.add_parser(
         'login',
-        help='Login to GOG and save authenticated token',
-        description='Authenticate with GOG and save your access token locally. '
+        help='Login to GOG using browser-based authentication',
+        description='Authenticate with GOG using browser-based OAuth flow. '
+                    'The script will open your browser to the GOG login page. '
+                    'Sign in (supports all methods including Google/Discord), then copy and paste the redirect URL. '
                     'Required before using update or download commands. '
-                    'Token expires after ~1 hour but will auto-refresh.'
+                    'Token will auto-refresh as needed.'
     )
-    parser.add_argument('username', action='store', help='GOG username/email (will prompt if not provided)', nargs='?', default=None)
-    parser.add_argument('password', action='store', help='GOG password (will prompt if not provided)', nargs='?', default=None)
     add_common_flags(parser)
 
 def add_update_command(subparsers):
@@ -280,8 +280,8 @@ MULTI-USER SUPPORT:
     
     epilog = '''
 EXAMPLES:
-  Login to GOG:
-    %(prog)s login myemail@example.com
+Login to GOG (browser-based authentication):
+    %(prog)s login
     
   Login with a specific user profile:
     %(prog)s --user alice login
@@ -418,7 +418,7 @@ def main(args):
     stime = datetime.datetime.now()
 
     if args.command == 'login':
-        cmd_login(args.username, args.password, user_id=args.user)
+        cmd_login(user_id=args.user)
         return  # no need to see time stats
     elif args.command == 'update':
         if not args.os:    

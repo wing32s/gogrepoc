@@ -4,6 +4,7 @@
 import sys
 import os
 import time
+import webbrowser
 import datetime
 import logging
 import threading
@@ -13,6 +14,7 @@ import re
 import getpass
 import html5lib
 import xml.etree.ElementTree
+import shelve
 from queue import Queue
 from urllib.parse import urlparse, unquote, urlunparse, parse_qs
 import ctypes # For wakelock logic if we move it here or keep in utils
@@ -29,13 +31,14 @@ from .utils import (
     move_with_increment_on_clash, pretty_size, get_total_size,
     HTTP_RETRY_DELAY, HTTP_GAME_DOWNLOADER_THREADS, HTTP_TIMEOUT,
     MANIFEST_FILENAME, RESUME_MANIFEST_FILENAME, CONFIG_FILENAME,
-    MD5_DIR_NAME, DOWNLOADING_DIR_NAME, PROVISIONAL_DIR_NAME,
+    MD5_DIR_NAME, MD5_DB, DOWNLOADING_DIR_NAME, PROVISIONAL_DIR_NAME,
     ORPHAN_DIR_NAME, IMAGES_DIR_NAME, INFO_FILENAME, SERIAL_FILENAME,
     GAME_STORAGE_DIR, RESUME_MANIFEST_SYNTAX_VERSION, RESUME_SAVE_THRESHOLD,
     GOG_HOME_URL, GOG_LOGIN_URL, GOG_AUTH_URL, GOG_TOKEN_URL,
     GOG_GALAXY_REDIRECT_URL, GOG_CLIENT_ID, GOG_SECRET,
     GOG_MEDIA_TYPE_GAME, GOG_MEDIA_TYPE_MOVIE, GOG_ACCOUNT_URL,
     REPO_HOME_URL, NEW_RELEASE_URL, LANG_TABLE, SKIP_MD5_FILE_EXT,
+    INSTALLERS_EXT, ORPHAN_DIR_EXCLUDE_LIST, ORPHAN_FILE_EXCLUDE_LIST,
     WINDOWS_PREALLOCATION_FS, POSIX_PREALLOCATION_FS
 )
 
@@ -60,131 +63,57 @@ FILE_BEGIN = 0x0
 
 lock = threading.Lock()
 
-def cmd_login(username, password, user_id=None):
+def cmd_login(user_id=None):
     """Attempts to log into GOG Galaxy API and saves the resulting Token to disk."""
-    
-    # Prompt for login/password if needed
-    if username is None or password is None:
-        info("You must use a GOG or GOG Galaxy account, Google/Discord sign-ins are not currently supported.")
-    if username is None:
-        username = input("Username: ")
-    if password is None:
-        password = getpass.getpass()
-    
+
+    info("This CLI uses browser-based sign-in for GOG.")
+    info("If your GOG login page offers Google/Discord sign-in, you can use it there.")
+
     # Use the exact same redirect_uri for both authorization and token requests
     redirect_uri = GOG_GALAXY_REDIRECT_URL + '?origin=client'
-    
-    token_data = {
-        'user': username,
-        'passwd': password,
-        'login_token': None,
-        'totp_url': None,
-        'totp_token': None,
-        'two_step_url': None,
-        'two_step_token': None,
-        'login_code': None
-    }
-    
+
     loginSession = makeGOGSession(loginSession=True)
-    
-    # Fetch the auth url
-    info("attempting Galaxy login as '{}' ...".format(token_data['user']))
-    
-    page_response = request(loginSession, GOG_AUTH_URL, 
+
+    # Fetch the authorize page URL (we'll send the user to it in a real browser)
+    page_response = request(loginSession, GOG_AUTH_URL,
                            args={'client_id': GOG_CLIENT_ID,
                                  'redirect_uri': redirect_uri,
                                  'response_type': 'code',
                                  'layout': 'client2'})
-    
-    # Parse the login page
-    etree = html5lib.parse(page_response.text, namespaceHTMLElements=False)
-    
-    # Bail if we find a request for a reCAPTCHA in the login form
-    loginForm = etree.find('.//form[@name="login"]')
-    if (loginForm is None) or len(loginForm.findall('.//div[@class="g-recaptcha form__recaptcha"]')) > 0:
-        if loginForm is None:
-            error("Could not locate login form on login page to test for reCAPTCHA, please contact the maintainer. In the meantime use a browser (Firefox recommended) to sign in at the below url and then copy & paste the full URL")
-        else:
-            error("gog is asking for a reCAPTCHA :(  Please use a browser (Firefox recommended) to sign in at the below url and then copy & paste the full URL")
-        error(page_response.url)
-        inputUrl = input("Signed In URL: ")
-        try:
-            parsed = urlparse(inputUrl)
-            query_parsed = parse_qs(parsed.query)
-            token_data['login_code'] = query_parsed['code'][0]
-        except Exception:
-            error("Could not parse entered URL. Try again later or report to the maintainer")
-            return
-    
-    # Extract the login token
-    for elm in etree.findall('.//input'):
-        if elm.attrib.get('id') == 'login__token':
-            token_data['login_token'] = elm.attrib['value']
-            break
-    
-    if not token_data['login_code']:
-        # Perform login
-        page_response = request(loginSession, GOG_LOGIN_URL,
-                              data={'login[username]': token_data['user'],
-                                    'login[password]': token_data['passwd'],
-                                    'login[login]': '',
-                                    'login[_token]': token_data['login_token']})
-        
-        etree = html5lib.parse(page_response.text, namespaceHTMLElements=False)
-        
-        if 'totp' in page_response.url:
-            token_data['totp_url'] = page_response.url
-            for elm in etree.findall('.//input'):
-                if elm.attrib.get('id') == 'two_factor_totp_authentication__token':
-                    token_data['totp_token'] = elm.attrib['value']
-                    break
-        elif 'two_step' in page_response.url:
-            token_data['two_step_url'] = page_response.url
-            for elm in etree.findall('.//input'):
-                if elm.attrib.get('id') == 'second_step_authentication__token':
-                    token_data['two_step_token'] = elm.attrib['value']
-                    break
-        elif 'on_login_success' in page_response.url:
-            parsed = urlparse(page_response.url)
-            query_parsed = parse_qs(parsed.query)
-            token_data['login_code'] = query_parsed['code'][0]
-        
-        # Handle TOTP authentication
-        if token_data['totp_url'] is not None:
-            token_data['totp_security_code'] = input("enter Authenticator security code: ")
-            
-            page_response = request(loginSession, token_data['totp_url'],
-                                  data={'two_factor_totp_authentication[token][letter_1]': token_data['totp_security_code'][0],
-                                        'two_factor_totp_authentication[token][letter_2]': token_data['totp_security_code'][1],
-                                        'two_factor_totp_authentication[token][letter_3]': token_data['totp_security_code'][2],
-                                        'two_factor_totp_authentication[token][letter_4]': token_data['totp_security_code'][3],
-                                        'two_factor_totp_authentication[token][letter_5]': token_data['totp_security_code'][4],
-                                        'two_factor_totp_authentication[token][letter_6]': token_data['totp_security_code'][5],
-                                        'two_factor_totp_authentication[send]': "",
-                                        'two_factor_totp_authentication[_token]': token_data['totp_token']})
-            if 'on_login_success' in page_response.url:
-                parsed = urlparse(page_response.url)
-                query_parsed = parse_qs(parsed.query)
-                token_data['login_code'] = query_parsed['code'][0]
-        
-        # Handle two-step authentication
-        elif token_data['two_step_url'] is not None:
-            token_data['two_step_security_code'] = input("enter two-step security code: ")
-            
-            page_response = request(loginSession, token_data['two_step_url'],
-                                  data={'second_step_authentication[token][letter_1]': token_data['two_step_security_code'][0],
-                                        'second_step_authentication[token][letter_2]': token_data['two_step_security_code'][1],
-                                        'second_step_authentication[token][letter_3]': token_data['two_step_security_code'][2],
-                                        'second_step_authentication[token][letter_4]': token_data['two_step_security_code'][3],
-                                        'second_step_authentication[send]': "",
-                                        'second_step_authentication[_token]': token_data['two_step_token']})
-            if 'on_login_success' in page_response.url:
-                parsed = urlparse(page_response.url)
-                query_parsed = parse_qs(parsed.query)
-                token_data['login_code'] = query_parsed['code'][0]
-    
+
+    auth_url = page_response.url
+    info("Open this URL in your browser to sign in:")
+    info(auth_url)
+    try:
+        webbrowser.open(auth_url)
+    except Exception:
+        pass
+
+    def _extract_code(user_input: str):
+        s = (user_input or "").strip()
+        if not s:
+            return None
+        # If they paste just the code, accept it
+        if "://" not in s and "code=" not in s:
+            return s
+        # Otherwise parse from URL (query or fragment)
+        parsed = urlparse(s)
+        q = parse_qs(parsed.query)
+        if "code" in q and q["code"]:
+            return q["code"][0]
+        frag = parse_qs(parsed.fragment)
+        if "code" in frag and frag["code"]:
+            return frag["code"][0]
+        return None
+
+    pasted = input("After signing in, paste the full redirected URL (or just the code): ").strip()
+    login_code = _extract_code(pasted)
+    if not login_code:
+        error("Could not find an authorization code in what you pasted.")
+        return
+
     # Exchange code for token
-    if token_data['login_code']:
+    if login_code:
         token_start = time.time()
         # GOG's OAuth implementation appears to accept GET requests for token endpoint
         # Using args (not data) to match original implementation
@@ -192,14 +121,14 @@ def cmd_login(username, password, user_id=None):
                                args={'client_id': GOG_CLIENT_ID,
                                      'client_secret': GOG_SECRET,
                                      'grant_type': 'authorization_code',
-                                     'code': token_data['login_code'],
+                                     'code': login_code,
                                      'redirect_uri': redirect_uri})
         token_json = token_response.json()
         token_json['expiry'] = token_start + token_json['expires_in']
         save_token(token_json, user_id=user_id)
         info('Galaxy login successful!')
     else:
-        error('Galaxy login failed, verify your username/password and try again.')
+        error('Galaxy login failed.')
         sys.exit(1)
 
 
@@ -746,7 +675,7 @@ def cmd_import(src_dir, dest_dir,os_list,lang_list,skipextras,skipids,ids,skipga
                             changed = True
                     except AttributeError:
                         setattr(entry,"updated",None)
-                        setattr(entry,"old_updated",updated)
+                        setattr(entry,"old_updated",None)
                         changed = True
                     try:
                         if entry.prev_verified == False:

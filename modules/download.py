@@ -1196,22 +1196,85 @@ def cmd_download(savedir, skipextras,skipids, dryrun, ids,os_list, lang_list,ski
         save_manifest(work_writable_items)
 
     
-    for dir in os.listdir(downloading_root_dir):
-        if dir != PROVISIONAL_DIR_NAME:
-            testdir= os.path.join(downloading_root_dir,dir)
-            if os.path.isdir(testdir):
-                if not os.listdir(testdir):
+    # Force garbage collection to release any file handles
+    import gc
+    gc.collect()
+    time.sleep(1)  # Give Windows time to process file handle releases
+    
+    # Cleanup empty directories with aggressive retry strategy
+    def safe_remove_empty_dir(path, dir_name, dir_type):
+        """Aggressively remove empty directory with multiple strategies."""
+        import platform
+        import subprocess
+        
+        # Convert to absolute path
+        abs_path = os.path.abspath(path)
+        
+        try:
+            if not os.listdir(abs_path):
+                # Strategy 1: Normal os.rmdir
+                for attempt in range(3):
                     try:
-                        os.rmdir(testdir)
+                        os.rmdir(abs_path)
+                        # Verify it's actually gone
+                        if not os.path.exists(abs_path):
+                            info(f"Cleaned up empty {dir_type} directory: {dir_name}")
+                            return True
+                        time.sleep(0.5)
+                    except (PermissionError, OSError):
+                        if attempt < 2:
+                            time.sleep(1)
+                        continue
+                
+                # Strategy 2: shutil.rmtree with onerror handler
+                def handle_remove_readonly(func, path_arg, exc):
+                    """Error handler to remove read-only files."""
+                    import stat
+                    try:
+                        if not os.access(path_arg, os.W_OK):
+                            os.chmod(path_arg, stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+                            func(path_arg)
                     except Exception:
                         pass
-
-    for dir in os.listdir(provisional_root_dir):
-        testdir= os.path.join(provisional_root_dir,dir)
-        if os.path.isdir(testdir):
-            if not os.listdir(testdir):
+                
                 try:
-                    os.rmdir(testdir)
+                    shutil.rmtree(abs_path, onerror=handle_remove_readonly)
+                    time.sleep(0.5)
+                    # Verify it's actually gone
+                    if not os.path.exists(abs_path):
+                        info(f"Cleaned up empty {dir_type} directory (forced): {dir_name}")
+                        return True
                 except Exception:
                     pass
+                
+                # Strategy 3: Windows native rmdir command
+                if platform.system() == "Windows":
+                    try:
+                        result = subprocess.run(['cmd', '/c', 'rmdir', '/s', '/q', abs_path], 
+                                     capture_output=True, timeout=5)
+                        time.sleep(0.5)
+                        if not os.path.exists(abs_path):
+                            info(f"Cleaned up empty {dir_type} directory (native): {dir_name}")
+                            return True
+                    except Exception:
+                        pass
+                
+                # If we get here, all strategies failed
+                error(f"Could not remove empty {dir_type} directory: {dir_name} at {abs_path}")
+                error(f"  Directory still exists: {os.path.exists(abs_path)}")
+                error(f"  Directory is empty: {not os.listdir(abs_path) if os.path.exists(abs_path) else 'N/A'}")
+        except Exception as e:
+            error(f"Exception during cleanup of {dir_name}: {e}")
+        return False
+    
+    for dir in os.listdir(downloading_root_dir):
+        if dir != PROVISIONAL_DIR_NAME:
+            testdir = os.path.join(downloading_root_dir, dir)
+            if os.path.isdir(testdir):
+                safe_remove_empty_dir(testdir, dir, "downloading")
+
+    for dir in os.listdir(provisional_root_dir):
+        testdir = os.path.join(provisional_root_dir, dir)
+        if os.path.isdir(testdir):
+            safe_remove_empty_dir(testdir, dir, "provisional")
                     
