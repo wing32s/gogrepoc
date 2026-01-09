@@ -616,6 +616,417 @@ def write_game_serial_file(item_homedir, item):
                     item.serial = item.serial.replace(u'</span>', os.linesep)
                     fd_serial.write(item.serial)
 
+def download_game_images(item, item_homedir, item_orphandir, backgrounds, covers, clean_old_images, downloadSession):
+    """Download game cover and background images.
+    
+    Purpose:
+        Download cover art and background images for a game from GOG's CDN. Handles both
+        legacy single background images and modern multi-resolution background collections.
+        Creates image directory structure and manages old image cleanup.
+    
+    Args:
+        item: Game manifest item containing image URL fields:
+             - bg_urls: Dictionary of background image URLs at various resolutions (modern)
+             - bg_url: Single background image URL (legacy, fallback)
+             - image_url: Cover art image URL
+        item_homedir: Absolute path to the game's home directory.
+        item_orphandir: Absolute path to the game's orphan directory for old images.
+        backgrounds: Boolean flag indicating whether to download background images.
+        covers: Boolean flag indicating whether to download cover art images.
+        clean_old_images: Boolean controlling old image handling:
+                         - True: Move old images to orphan directory (preservation)
+                         - False: Delete old images completely (cleanup)
+        downloadSession: Authenticated requests session for downloading from GOG CDN.
+    
+    Behavior:
+        Image Directory Setup:
+        - Creates !images directory within game's home directory if it doesn't exist
+        - Structure: item_homedir/!images/[bg_urls|bg_url|image_url]/...
+        
+        Background Image Download (Modern):
+        - Attempts to download from item.bg_urls (dictionary of multiple resolutions)
+        - Migrates from legacy single bg_url to new multi-resolution structure
+        - Cleans up old bg_url directory if it exists (move to orphan or delete)
+        - Downloads all available background resolutions using download_image_from_item_keys
+        - Windows Python 2: Applies long path prefix for paths > 260 characters
+        
+        Background Image Download (Legacy):
+        - Falls back to item.bg_url if bg_urls attribute doesn't exist (AttributeError)
+        - Downloads single background image using download_image_from_item_key
+        - Maintains backward compatibility with older manifest formats
+        
+        Cover Image Download:
+        - Downloads cover art from item.image_url if available and covers=True
+        - Uses download_image_from_item_key for single image download
+        
+        Error Handling:
+        - KeyboardInterrupt: Logs warning and re-raises to allow graceful shutdown
+        - AttributeError: Catches missing bg_urls and falls back to legacy bg_url
+        - Other Exceptions: Logs warning but continues (download failures are non-fatal)
+        - Critical errors (old image removal): Logs error and re-raises to stop download
+        
+        Windows Long Path Support:
+        - For Python 2 on Windows, prepends uLongPathPrefix to paths exceeding 260 chars
+        - Applies to: old bg_url directory path and orphan directory path
+        - Enables handling of deeply nested directory structures
+    
+    Important Notes:
+        - Non-Blocking Failures: Image download failures don't prevent game file downloads
+        - Migration Logic: Automatically handles transition from old single bg_url to new
+          multi-resolution bg_urls format by cleaning up old directory
+        - Conditional Downloads: Each image type (backgrounds, covers) can be independently
+          enabled/disabled via boolean flags
+        - Directory Creation: Automatically creates necessary directory structure
+        - Preservation Mode: clean_old_images determines whether old images are preserved
+          in orphan directory or permanently deleted
+    
+    Examples:
+        # Download all images with preservation
+        download_game_images(
+            item=game_item,
+            item_homedir='/games/beat_cop',
+            item_orphandir='/games/beat_cop/!orphans',
+            backgrounds=True,
+            covers=True,
+            clean_old_images=True,
+            downloadSession=session
+        )
+        
+        # Download only covers without preservation
+        download_game_images(
+            item=game_item,
+            item_homedir='/games/hollow_knight',
+            item_orphandir='/games/hollow_knight/!orphans',
+            backgrounds=False,
+            covers=True,
+            clean_old_images=False,
+            downloadSession=session
+        )
+        
+        # Skip all image downloads
+        download_game_images(
+            item=game_item,
+            item_homedir='/games/game',
+            item_orphandir='/games/game/!orphans',
+            backgrounds=False,
+            covers=False,
+            clean_old_images=False,
+            downloadSession=session
+        )
+    
+    Usage in cmd_download:
+        This function is called after writing game info/serial files and before
+        downloading game files:
+        
+        # Download images (covers and backgrounds)
+        if not dryrun:
+            download_game_images(
+                item, item_homedir, item_orphandir,
+                backgrounds, covers, clean_old_images,
+                downloadSession
+            )
+        
+        The function runs in the main download workflow, with failures logged but
+        not interrupting the overall download process.
+    
+    Directory Structure Example:
+        Before (legacy):
+        /games/beat_cop/!images/bg_url/images/bg.jpg
+        
+        After (modern with migration):
+        /games/beat_cop/!orphans/!images/bg_url/  (old moved to orphan)
+        /games/beat_cop/!images/bg_urls/1920x1080/images/bg_1080.jpg
+        /games/beat_cop/!images/bg_urls/3840x2160/images/bg_4k.jpg
+        /games/beat_cop/!images/image_url/images/cover.jpg
+    
+    Raises:
+        KeyboardInterrupt: Re-raised to allow graceful shutdown during user interruption.
+        Exception: Re-raised if critical operations (old image cleanup) fail, otherwise
+                  exceptions are caught and logged as warnings.
+    """
+    images_dir_name = os.path.join(item_homedir, IMAGES_DIR_NAME)
+    image_orphandir = os.path.join(item_orphandir, IMAGES_DIR_NAME)
+
+    if not os.path.exists(images_dir_name):
+        os.makedirs(images_dir_name)
+    try:
+        if len(item.bg_urls) != 0 and backgrounds:
+            images_old_bg_url_dir_name = os.path.join(images_dir_name, "bg_url")
+            modified_image_orphandir = image_orphandir  
+            if (platform.system() == "Windows" and sys.version_info[0] < 3):
+                images_old_bg_url_dir_name = uLongPathPrefix + os.path.abspath(images_old_bg_url_dir_name)
+                modified_image_orphandir = uLongPathPrefix + os.path.abspath(modified_image_orphandir)
+            if os.path.exists(images_old_bg_url_dir_name):
+                try:
+                    if clean_old_images:
+                        if not os.path.exists(modified_image_orphandir):
+                            os.makedirs(modified_image_orphandir)
+                        move_with_increment_on_clash(images_old_bg_url_dir_name, modified_image_orphandir)
+                    else:
+                        shutil.rmtree(images_old_bg_url_dir_name)
+                except Exception as e:
+                    error("Could not delete potential old bg_url files, aborting update attempt. Please make sure folder and files are writeable and that nothing is accessing the !image folder")
+                    raise
+            try:
+                download_image_from_item_keys(item, "bg_urls", images_dir_name, image_orphandir, clean_old_images, downloadSession)
+            except KeyboardInterrupt:
+                warn("Interrupted during download of background image(s)")
+                raise
+            except Exception:
+                warn("Could not download background image")
+                
+    except AttributeError:
+        if item.bg_url != '' and backgrounds:
+            try:
+                download_image_from_item_key(item, "bg_url", images_dir_name, image_orphandir, clean_old_images, downloadSession)
+            except KeyboardInterrupt:
+                warn("Interrupted during download of background image")
+                raise
+            except Exception:
+                warn("Could not download background image")
+            
+    if item.image_url != '' and covers:
+        try:
+            download_image_from_item_key(item, "image_url", images_dir_name, image_orphandir, clean_old_images, downloadSession)
+        except KeyboardInterrupt:
+            warn("Interrupted during download of cover image")
+            raise
+        except Exception:
+            warn("Could not download cover image")
+
+def process_game_item_for_download(game_item, item_homedir, item_downloaddir, item_provisionaldir, skipfiles, sizes, downloadLimit, work_dict, provisional_dict, all_items):
+    """Process a single game item to determine if it should be downloaded and queue it accordingly.
+    
+    Purpose:
+        Validate a game file (installer, Galaxy installer, shared installer, or extra) and determine
+        whether it needs to be downloaded, resumed from provisional state, or skipped. Adds valid
+        downloads to the work queue and tracks provisional files separately.
+    
+    Args:
+        game_item: Download item from manifest containing:
+                  - name: Filename (string)
+                  - size: File size in bytes (int, may be None)
+                  - href: Download URL (string)
+                  - force_change: Boolean flag indicating file should be re-downloaded
+                  - updated: Timestamp of file update (optional)
+                  - old_updated: Previous timestamp for comparison (optional)
+        item_homedir: Absolute path to the game's home directory (final destination).
+        item_downloaddir: Absolute path to the downloading directory (in-progress downloads).
+        item_provisionaldir: Absolute path to the provisional directory (verified partial downloads).
+        skipfiles: List of filename patterns to skip (e.g., ['*.pdf', 'manual_*']).
+        sizes: Dictionary mapping destination file paths to sizes.
+                Updated by this function when a file is queued for download.
+                Structure: {dest_file_path: size_in_bytes, ...}
+        downloadLimit: Maximum total download size in bytes (int or None).
+                      If None, no limit is enforced.
+                      If set, files that would exceed the limit are skipped.
+        work_dict: Dictionary for queueing files to download.
+                  Updated by this function when a file needs to be downloaded.
+                  Structure: {dest_file: (href, size, start, end, dest, downloading, provisional, item, all_items), ...}
+        provisional_dict: Dictionary for tracking provisional files to verify and move.
+                         Updated by this function when a provisional file is found.
+                         Structure: {dest_file: (dest_file, provisional_file, game_item, all_items), ...}
+        all_items: Reference to all game items (used for context in download/provisional processing).
+    
+    Returns:
+        bool: True if the item was queued for download or provisional processing, False if skipped.
+    
+    Behavior:
+        Attribute Initialization:
+        - Ensures game_item has force_change attribute (defaults to False)
+        - Ensures game_item has updated attribute (defaults to None)
+        - Ensures game_item has old_updated attribute (defaults to None)
+        - Uses try/except AttributeError pattern for backward compatibility
+        
+        Skip File Pattern Matching:
+        - Checks if filename matches any pattern in skipfiles list
+        - Logs skip reason with matching pattern
+        - Returns False to indicate item was skipped
+        
+        Path Construction:
+        - dest_file: Final destination path (item_homedir/filename)
+        - downloading_file: In-progress download path (item_downloaddir/filename)
+        - provisional_file: Verified partial download path (item_provisionaldir/filename)
+        
+        Size Validation:
+        - Checks if game_item.size is None (missing size information)
+        - Logs warning and returns False if size is unknown
+        - Prevents downloads of files with missing metadata
+        
+        Provisional File Handling:
+        - Checks if file exists in provisional directory
+        - If provisional file exists AND destination file exists: Error state (logs warning)
+        - If provisional file exists AND no destination file: Queues for verification/move
+        - Provisional files are added to provisional_dict for separate processing
+        - Returns False after queueing provisional file (no download needed)
+        
+        Destination File Validation:
+        - Checks if file already exists at final destination
+        - Validates size matches expected size from manifest
+        - Checks force_change flag to determine if re-download is required
+        - If valid and not forced: Logs "pass" and returns False (skip)
+        - If size mismatch or forced: Logs "fail" and proceeds to queue download
+        
+        Download Limit Enforcement:
+        - If downloadLimit is set, calculates total queued size + current file size
+        - Compares against downloadLimit to prevent exceeding user-specified quota
+        - Logs skip message with size information if limit would be exceeded
+        - Returns False to skip file when limit would be exceeded
+        
+        Download Queueing:
+        - Adds file to work_dict for download
+        - Updates sizes dictionary with file size for tracking
+        - Work dict entry contains: (href, size, start_byte, end_byte, dest, downloading, provisional, item, all_items)
+        - start_byte is 0, end_byte is size-1 (full file download range)
+        - Returns True to indicate item was queued
+    
+    Important Notes:
+        - Side Effects: This function modifies sizes, work_dict, and provisional_dict dictionaries
+        - Logging: Uses info() and warn() for user feedback about each file's status
+        - File States: Files can be in one of several states:
+          * Not present: Needs download
+          * In provisional: Needs verification/move
+          * In destination (valid): Skip
+          * In destination (invalid): Needs re-download
+          * Both provisional and destination: Error state
+        - Download Limit: Limit is checked against cumulative size of all queued files
+        - Backward Compatibility: Handles missing attributes (force_change, updated, old_updated)
+          by initializing them with default values
+    
+    Examples:
+        # Process a single game item
+        process_game_item_for_download(
+            game_item=installer_item,
+            item_homedir='/games/beat_cop',
+            item_downloaddir='/downloading/beat_cop',
+            item_provisionaldir='/downloading/.provisional/beat_cop',
+            skipfiles=['*.pdf'],
+            sizes={},
+            downloadLimit=None,
+            work_dict={},
+            provisional_dict={},
+            all_items=manifest_items
+        )
+        
+        # With download limit
+        process_game_item_for_download(
+            game_item=large_installer,
+            item_homedir='/games/game',
+            item_downloaddir='/downloading/game',
+            item_provisionaldir='/downloading/.provisional/game',
+            skipfiles=[],
+            sizes={'/games/other/file.exe': 1073741824},  # 1GB already queued
+            downloadLimit=2147483648,  # 2GB limit
+            work_dict=existing_work,
+            provisional_dict=existing_provisional,
+            all_items=manifest_items
+        )
+    
+    Usage in cmd_download:
+        This function is called for each game file in the download workflow:
+        
+        # Populate queue with all files to be downloaded
+        for game_item in filtered_downloads + filtered_galaxyDownloads + filtered_sharedDownloads + filtered_extras:
+            if game_item.name is None:
+                continue  # no game name, usually due to 404 during file fetch
+            
+            process_game_item_for_download(
+                game_item, item_homedir, item_downloaddir, item_provisionaldir,
+                skipfiles, sizes, downloadLimit, work_dict, provisional_dict, all_items
+            )
+        
+        After processing all items, work_dict contains files to download and
+        provisional_dict contains files to verify/move.
+    
+    Log Output Examples:
+        Skip (pattern match):
+        "     skip       manual.pdf (matches "*.pdf")"
+        
+        Provisional file found:
+        "     working    setup.exe"
+        
+        File exists and valid:
+        "     pass       setup.exe"
+        
+        File exists but invalid:
+        "     fail       setup.exe has incorrect size."
+        "     fail       setup.exe has been marked for change."
+        
+        File needs download:
+        "     download   setup.exe"
+        
+        Skip (download limit):
+        "     skip       setup.exe (size 500.0MB would exceed download limit (1800.0MB/2048.0MB))"
+        
+        Warning (unknown size):
+        "     unknown    setup.exe has no size info.  skipping"
+        
+        Warning (both provisional and destination):
+        "     error      setup.exe has both provisional and destination file. Please remove one."
+    
+    Returns:
+        bool: True if item was queued (download or provisional), False if skipped
+    """
+    try:
+        _ = game_item.force_change
+    except AttributeError:
+        game_item.force_change = False
+        
+    try:
+        _ = game_item.updated
+    except AttributeError:
+        game_item.updated = None
+        
+    try:
+        _ = game_item.old_updated
+    except AttributeError:
+        game_item.old_updated = None
+        
+    skipfile_skip = check_skip_file(game_item.name, skipfiles)
+    if skipfile_skip:
+        info('     skip       %s (matches "%s")' % (game_item.name, skipfile_skip))
+        return False
+
+    dest_file = os.path.join(item_homedir, game_item.name)
+    downloading_file = os.path.join(item_downloaddir, game_item.name)
+    provisional_file = os.path.join(item_provisionaldir,game_item.name)
+
+    if game_item.size is None:
+        warn('     unknown    %s has no size info.  skipping' % game_item.name)
+        return False
+
+    if os.path.isfile(provisional_file):
+        if os.path.isfile(dest_file):
+            #I don't know how you got it here, but if you did , clean up your mess! This is not my problem. But more politely. 
+            warn('     error      %s has both provisional and destination file. Please remove one.' % game_item.name)
+            return False
+        else:
+            info('     working    %s' % game_item.name)
+            provisional_dict[dest_file] = (dest_file,provisional_file,game_item,all_items)
+            return False
+            
+        
+    if os.path.isfile(dest_file):
+        if game_item.size != os.path.getsize(dest_file):
+            warn('     fail       %s has incorrect size.' % game_item.name)
+        elif game_item.force_change == True:
+            warn('     fail       %s has been marked for change.' % game_item.name)
+        else:
+            info('     pass       %s' % game_item.name)
+            return False  # move on to next game item
+    
+    if downloadLimit is not None and ((sum(sizes.values()) + game_item.size) > downloadLimit):
+        info('     skip       %s (size %s would exceed download limit (%s/%s) )' % (game_item.name, megs(game_item.size),megs(sum(sizes.values())),megs(downloadLimit)))
+        return False
+
+    
+    info('     download   %s' % game_item.name)
+    sizes[dest_file] = game_item.size
+    
+
+    work_dict[dest_file] = (game_item.href, game_item.size, 0, game_item.size-1, dest_file,downloading_file,provisional_file,game_item,all_items)
+    return True
+
 def download_image_from_item_key(item, key, images_dir_name, image_orphandir, clean_existing, downloadSession):
     """Download a single game image from a manifest item's URL field.
     
@@ -2657,119 +3068,14 @@ def cmd_download(savedir, skipextras,skipids, dryrun, ids,os_list, lang_list,ski
 
         # Download images (covers and backgrounds)
         if not dryrun:
-            images_dir_name = os.path.join(item_homedir, IMAGES_DIR_NAME)
-            image_orphandir = os.path.join(item_orphandir, IMAGES_DIR_NAME)
-
-            if not os.path.exists(images_dir_name):
-                os.makedirs(images_dir_name)
-            try:
-                if len(item.bg_urls) != 0 and backgrounds:
-                    images_old_bg_url_dir_name = os.path.join(images_dir_name, "bg_url")
-                    modified_image_orphandir = image_orphandir  
-                    if (platform.system() == "Windows" and sys.version_info[0] < 3):
-                        images_old_bg_url_dir_name = uLongPathPrefix + os.path.abspath(images_old_bg_url_dir_name)
-                        modified_image_orphandir = uLongPathPrefix + os.path.abspath(modified_image_orphandir)
-                    if os.path.exists(images_old_bg_url_dir_name):
-                        try:
-                            if clean_old_images:
-                                if not os.path.exists(modified_image_orphandir):
-                                    os.makedirs(modified_image_orphandir)
-                                move_with_increment_on_clash(images_old_bg_url_dir_name, modified_image_orphandir)
-                            else:
-                                shutil.rmtree(images_old_bg_url_dir_name)
-                        except Exception as e:
-                            error("Could not delete potential old bg_url files, aborting update attempt. Please make sure folder and files are writeable and that nothing is accessing the !image folder")
-                            raise
-                    try:
-                        download_image_from_item_keys(item, "bg_urls", images_dir_name, image_orphandir, clean_old_images, downloadSession)
-                    except KeyboardInterrupt:
-                        warn("Interrupted during download of background image(s)")
-                        raise
-                    except Exception:
-                        warn("Could not download background image")
-                    
-            except AttributeError:
-                if item.bg_url != '' and backgrounds:
-                    try:
-                        download_image_from_item_key(item, "bg_url", images_dir_name, image_orphandir, clean_old_images, downloadSession)
-                    except KeyboardInterrupt:
-                        warn("Interrupted during download of background image")
-                        raise
-                    except Exception:
-                        warn("Could not download background image")
-                
-            if item.image_url != '' and covers:
-                try:
-                    download_image_from_item_key(item, "image_url", images_dir_name, image_orphandir, clean_old_images, downloadSession)
-                except KeyboardInterrupt:
-                    warn("Interrupted during download of cover image")
-                    raise
-                except Exception:
-                    warn("Could not download cover image")
+            download_game_images(item, item_homedir, item_orphandir, backgrounds, covers, clean_old_images, downloadSession)
 
         # Populate queue with all files to be downloaded
         for game_item in filtered_downloads + filtered_galaxyDownloads + filtered_sharedDownloads + filtered_extras:
             if game_item.name is None:
                 continue  # no game name, usually due to 404 during file fetch
 
-            try:
-                _ = game_item.force_change
-            except AttributeError:
-                game_item.force_change = False
-                
-            try:
-                _ = game_item.updated
-            except AttributeError:
-                game_item.updated = None
-                
-            try:
-                _ = game_item.old_updated
-            except AttributeError:
-                game_item.old_updated = None
-                
-            skipfile_skip = check_skip_file(game_item.name, skipfiles)
-            if skipfile_skip:
-                info('     skip       %s (matches "%s")' % (game_item.name, skipfile_skip))
-                continue
-
-            dest_file = os.path.join(item_homedir, game_item.name)
-            downloading_file = os.path.join(item_downloaddir, game_item.name)
-            provisional_file = os.path.join(item_provisionaldir,game_item.name)
-
-            if game_item.size is None:
-                warn('     unknown    %s has no size info.  skipping' % game_item.name)
-                continue
-
-            if os.path.isfile(provisional_file):
-                if os.path.isfile(dest_file):
-                    #I don't know how you got it here, but if you did , clean up your mess! This is not my problem. But more politely. 
-                    warn('     error      %s has both provisional and destination file. Please remove one.' % game_item.name)
-                    continue
-                else:
-                    info('     working    %s' % game_item.name)
-                    provisional_dict[dest_file] = (dest_file,provisional_file,game_item,all_items)
-                    continue
-                    
-                
-            if os.path.isfile(dest_file):
-                if game_item.size != os.path.getsize(dest_file):
-                    warn('     fail       %s has incorrect size.' % game_item.name)
-                elif game_item.force_change == True:
-                    warn('     fail       %s has been marked for change.' % game_item.name)
-                else:
-                    info('     pass       %s' % game_item.name)
-                    continue  # move on to next game item
-            
-            if downloadLimit is not None and ((sum(sizes.values()) + game_item.size) > downloadLimit):
-                info('     skip       %s (size %s would exceed download limit (%s/%s) )' % (game_item.name, megs(game_item.size),megs(sum(sizes.values())),megs(downloadLimit)))
-                continue
-
-            
-            info('     download   %s' % game_item.name)
-            sizes[dest_file] = game_item.size
-            
-        
-            work_dict[dest_file] = (game_item.href, game_item.size, 0, game_item.size-1, dest_file,downloading_file,provisional_file,game_item,all_items)
+            process_game_item_for_download(game_item, item_homedir, item_downloaddir, item_provisionaldir, skipfiles, sizes, downloadLimit, work_dict, provisional_dict, all_items)
     
     for work_item in work_dict:
         work.put(work_dict[work_item])
@@ -2875,35 +3181,6 @@ def cmd_download(savedir, skipextras,skipids, dryrun, ids,os_list, lang_list,ski
                     with lock:
                         info("moving provisionally completed download '%s' to '%s'  " % (downloading_path,provisional_path))
                         shutil.move(downloading_path,provisional_path)
-                        #if writable_game_item != None:
-                        #    try:
-                        #        _ = writable_game_item.force_change
-                        #    except AttributeError:
-                        #        writable_game_item.force_change = False
-                        #    try:
-                        #        _ = writable_game_item.updated
-                        #    except AttributeError:
-                        #        writable_game_item.updated = None
-                        #    try:
-                        #        _ = writable_game_item.old_updated
-                        #    except AttributeError:
-                        #        writable_game_item.old_updated = None
-                        #    try:
-                        #        _ = writable_game_item.prev_verified
-                        #    except AttributeError:
-                        #        writable_game_item.prev_verified = False
-
-                        #    wChanged = False;
-                        #    if writable_game_item.force_change:
-                        #        writable_game_item.force_change = False
-                        #        writable_game_item.old_updated = writable_game_item.updated
-                        #        wChanged = True
-                        #    if writable_game_item.prev_verified:
-                        #        writable_game_item.prev_verified = False
-                        #        wChanged = True
-                        #    if wChanged:  
-                        #        save_manifest(work_writable_items)
-                    #This should be thread safe so should be fine outside the lock, doing it after the lock so we don't add this if something went wrong.
                     work_provisional.put((path,provisional_path,writable_game_item,work_writable_items)) 
                 else:
                     with lock:
