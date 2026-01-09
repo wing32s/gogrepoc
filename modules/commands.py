@@ -28,7 +28,7 @@ from .utils import (
     AttrDict, info, warn, error, debug, log_exception,
     ConditionalWriter, open_notrunc, open_notruncwrrd, hashfile, hashstream, slugify,
     check_skip_file, process_path, is_numeric_id, get_fs_type, test_zipfile,
-    move_with_increment_on_clash, pretty_size, get_total_size,
+    move_with_increment_on_clash, pretty_size, get_total_size, build_md5_lookup,
     HTTP_RETRY_DELAY, HTTP_GAME_DOWNLOADER_THREADS, HTTP_TIMEOUT,
     MANIFEST_FILENAME, RESUME_MANIFEST_FILENAME, CONFIG_FILENAME,
     MD5_DIR_NAME, MD5_DB, DOWNLOADING_DIR_NAME, PROVISIONAL_DIR_NAME,
@@ -53,6 +53,8 @@ from .manifest import (
     filter_downloads, filter_extras, filter_dlcs, deDuplicateList
 )
 
+from .game_filter import GameFilter
+
 # For preallocation
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
@@ -64,7 +66,33 @@ FILE_BEGIN = 0x0
 lock = threading.Lock()
 
 def cmd_login(user_id=None):
-    """Attempts to log into GOG Galaxy API and saves the resulting Token to disk."""
+    """Authenticate with GOG using browser-based OAuth2 flow and save the token.
+    
+    Opens the user's default web browser to GOG's login page where they can sign in
+    using their GOG credentials or third-party providers (Google/Discord). After
+    successful authentication, the user pastes the redirected URL or authorization
+    code back into the CLI. The resulting OAuth2 token is saved to disk for future
+    API requests.
+    
+    The token file location depends on the user_id:
+    - Default (no user_id): TOKEN_FILENAME in current directory
+    - With user_id: TOKEN_FILENAME.<user_id> in current directory
+    
+    Args:
+        user_id: Optional identifier for multi-user support. If provided, saves
+            token to a user-specific file allowing multiple GOG accounts to be
+            managed independently.
+    
+    Raises:
+        SystemExit: If the user fails to provide a valid authorization code or
+            if the token exchange with GOG servers fails.
+    
+    Notes:
+        - Requires an active internet connection and working web browser
+        - The token includes an expiry time and can be automatically renewed
+        - Browser opening may fail in headless/container environments; URL is
+          displayed for manual copying in such cases
+    """
 
     info("This CLI uses browser-based sign-in for GOG.")
     info("If your GOG login page offers Google/Discord sign-in, you can use it there.")
@@ -132,7 +160,265 @@ def cmd_login(user_id=None):
         sys.exit(1)
 
 
+def cmd_update_v2(os_list, lang_list, skipknown, updateonly, partial, ids, skipids, skipHidden, 
+                  installers, resumemode, strict, strictDupe, md5xmls, noChangeLogs):
+    """Update the local game manifest using new modular architecture (EXPERIMENTAL).
+    
+    This is a refactored version of cmd_update that uses the game_filter and update
+    modules for cleaner, more maintainable code. It provides the same functionality
+    as cmd_update but with improved organization and testability.
+    
+    Args:
+        os_list: List of operating systems to include (e.g., ['windows', 'linux', 'mac'])
+        lang_list: List of language codes to include (e.g., ['en', 'de', 'fr'])
+        skipknown: If True, only add new games not already in manifest
+        updateonly: If True, only process games with updates
+        partial: If True, enables both skipknown and updateonly (incremental update)
+        ids: List of game titles or IDs to process (None = all games)
+        skipids: List of game titles or IDs to exclude
+        skipHidden: If True, exclude hidden games
+        installers: Installer type filter ('both', 'standalone', 'galaxy')
+        resumemode: Resume behavior ('resume', 'noresume', 'onlyresume')
+        strict: Force thorough timestamp/MD5 checking on all file types
+        strictDupe: Remove duplicate entries from download lists
+        md5xmls: Fetch MD5 checksum XML files
+        noChangeLogs: Exclude changelog data from manifest
+    """
+    from .update import (
+        FetchConfig,
+        update_full_library,
+        update_specific_games, 
+        update_partial,
+        update_new_games_only,
+        update_changed_games_only,
+        check_resume_needed,
+        create_resume_properties,
+        process_items_with_resume,
+        handle_single_game_rename
+    )
+    from .game_filter import GameFilter
+    
+    info("Using experimental cmd_update_v2 (modular architecture)")
+    
+    # Load existing manifest
+    gamesdb = load_manifest()
+    
+    # Save original parameters for post-resume
+    save_os_list = os_list
+    save_lang_list = lang_list
+    save_skipknown = skipknown
+    save_updateonly = updateonly
+    save_partial = partial
+    save_installers = installers
+    save_strict = strict
+    save_strictDupe = strictDupe
+    save_md5xmls = md5xmls
+    save_noChangeLogs = noChangeLogs
+    
+    # Check for resume manifest
+    needresume, resumedb, resumeprops = check_resume_needed(resumemode)
+    
+    # If resuming, load resume parameters
+    if needresume:
+        info('incomplete update detected, resuming...')
+        os_list = resumeprops['os_list']
+        lang_list = resumeprops['lang_list']
+        installers = resumeprops['installers']
+        strict = resumeprops['strict']
+        partial = resumeprops.get('partial', partial)
+        skipknown = resumeprops.get('skipknown', skipknown)
+        updateonly = resumeprops.get('updateonly', updateonly)
+        strictDupe = resumeprops.get('strictDupe', True)
+        md5xmls = resumeprops.get('md5xmls', True)
+        noChangeLogs = resumeprops.get('noChangeLogs', False)
+        
+        items = resumedb
+    else:
+        # Normalize partial mode
+        if partial:
+            skipknown = True
+            updateonly = True
+        
+        # Create session and renew token
+        updateSession = makeGOGSession()
+        renew_token(updateSession)
+        
+        # Create fetch configuration
+        config = FetchConfig(
+            os_list=os_list,
+            lang_list=lang_list,
+            installers=installers,
+            strict_dupe=strictDupe,
+            md5xmls=md5xmls,
+            no_changelogs=noChangeLogs
+        )
+        
+        # Extract known IDs from existing manifest
+        known_ids = [item.id for item in gamesdb]
+        
+        # Determine which update strategy to use and fetch games
+        if ids:
+            # Strategy 1: Specific games by ID/title
+            info("Update mode: Specific games")
+            items = update_specific_games(
+                updateSession, 
+                ids, 
+                config,
+                skipids=skipids
+            )
+        elif skipknown and updateonly:
+            # Strategy 2: Partial update (new OR updated)
+            info("Update mode: Partial (new games + updates)")
+            items = update_partial(
+                updateSession,
+                known_ids,
+                config,
+                skipids=skipids,
+                skip_hidden=skipHidden
+            )
+        elif skipknown:
+            # Strategy 3: New games only
+            info("Update mode: New games only")
+            items = update_new_games_only(
+                updateSession,
+                known_ids,
+                config,
+                skipids=skipids,
+                skip_hidden=skipHidden
+            )
+        elif updateonly:
+            # Strategy 4: Updated games only
+            info("Update mode: Games with updates only")
+            items = update_changed_games_only(
+                updateSession,
+                config,
+                skipids=skipids,
+                skip_hidden=skipHidden
+            )
+        else:
+            # Strategy 5: Full library update
+            info("Update mode: Full library")
+            items = update_full_library(updateSession, config)
+        
+        # Bail if nothing to do
+        if len(items) == 0:
+            if partial:
+                warn('no new games or updates found.')
+            elif updateonly:
+                warn('no new game updates found.')
+            elif skipknown:
+                warn('no new games found.')
+            else:
+                warn('nothing to do')
+            return
+    
+    # Create/update resume manifest
+    resumedb = sorted(items, key=lambda item: item.title)
+    resumeprop = create_resume_properties(
+        FetchConfig(os_list, lang_list, installers, strictDupe, md5xmls, noChangeLogs),
+        skipknown, partial, updateonly
+    )
+    resumeprop['strict'] = strict
+    resumedb.append(resumeprop)
+    save_resume_manifest(resumedb)
+    
+    # Create GameFilter with strict flag for processing
+    processing_filter = GameFilter(strict=strict)
+    
+    # Process items with strict update checking and resume saves
+    gamesdb, global_dupes = process_items_with_resume(
+        items, gamesdb, processing_filter, skipknown, updateonly
+    )
+    
+    # Handle game renames (directory and file renames when GOG changes titles)
+    info("Checking for game renames...")
+    gamedir = os.path.join(GAME_STORAGE_DIR, 'games')
+    orphan_root_dir = os.path.join(gamedir, ORPHAN_DIR_NAME)
+    if not os.path.isdir(orphan_root_dir):
+        os.makedirs(orphan_root_dir)
+    
+    for game in gamesdb:
+        handle_single_game_rename(game, gamedir, orphan_root_dir, dryrun=False)
+    
+    # Save final manifest in alphabetical order
+    sorted_gamesdb = sorted(gamesdb, key=lambda game: game.title)
+    save_manifest(sorted_gamesdb, update_md5_xml=md5xmls, delete_md5_xml=md5xmls)
+    
+    # Mark resume as complete
+    resumeprop['complete'] = True
+    save_resume_manifest([resumeprop])
+    
+    info("Manifest saved successfully")
+    
+    # If this was a resume, call again with original parameters
+    if needresume:
+        info('resume completed')
+        if resumemode != 'onlyresume':
+            info('returning to specified download request...')
+            cmd_update_v2(save_os_list, save_lang_list, save_skipknown, save_updateonly,
+                         save_partial, ids, skipids, skipHidden, save_installers, resumemode,
+                         save_strict, save_strictDupe, save_md5xmls, save_noChangeLogs)
+
+
 def cmd_update(os_list, lang_list, skipknown, updateonly, partial, ids, skipids,skipHidden,installers,resumemode,strict,strictDupe,strictDownloadsUpdate,strictExtrasUpdate,md5xmls,noChangeLogs):
+    """Update the local game manifest by fetching the latest game data from GOG.
+    
+    Queries the GOG API to retrieve your owned games and their available downloads
+    (installers, extras, DLCs). Updates the local manifest file with current file
+    information including download URLs, MD5 checksums, version numbers, and 
+    changelogs. Supports resuming interrupted updates and various filtering options
+    to control which games are processed.
+    
+    The manifest is saved periodically during updates and can be resumed if interrupted.
+    Use this command before downloading to ensure you have the latest game metadata.
+    
+    Args:
+        os_list: List of operating systems to include (e.g., ['windows', 'linux', 'mac']).
+            Only downloads for these platforms will be included in the manifest.
+        lang_list: List of language codes to include (e.g., ['en', 'de', 'fr']).
+            Only downloads for these languages will be included.
+        skipknown: If True, only add new games not already in the manifest.
+            Useful for incremental updates of large libraries.
+        updateonly: If True, only process games that GOG reports as having updates.
+            Skips games with no changes since last update.
+        partial: If True, enables both skipknown and updateonly modes.
+            Shortcut for incremental library updates.
+        ids: List of game titles or IDs to process. If provided, only these games
+            are updated. Can be game slugs (e.g., 'witcher_3') or numeric IDs.
+        skipids: List of game titles or IDs to exclude from processing.
+            Useful for blacklisting problematic games.
+        skipHidden: If True, excludes games marked as hidden in your GOG library.
+        installers: Filter for installer types. Valid values:
+            - 'both': Include both standalone and Galaxy installers (default)
+            - 'standalone': Only standalone offline installers
+            - 'galaxy': Only GOG Galaxy installers
+        resumemode: Controls resume behavior for interrupted updates:
+            - 'resume': Automatically resume if incomplete update detected
+            - 'noresume': Start fresh, discarding any resume data
+        strict: If True, marks files for re-download when version/size changes.
+            Ensures local files match latest versions exactly.
+        strictDupe: If True, removes duplicate entries from download lists.
+            Prevents same file from appearing multiple times.
+        strictDownloadsUpdate: If True, applies strict checking to game installers.
+            Files with version changes are marked for update.
+        strictExtrasUpdate: If True, applies strict checking to extras/bonus content.
+            Less commonly needed since extras rarely change.
+        md5xmls: If True, fetches MD5 checksum XML files when available.
+            Used for file integrity verification during downloads.
+        noChangeLogs: If True, excludes changelog data from manifest.
+            Reduces manifest size if changelog history is not needed.
+    
+    Raises:
+        SystemExit: If authentication fails or GOG API returns invalid data.
+    
+    Notes:
+        - Requires valid authentication token (run cmd_login first)
+        - Token is automatically renewed if expiring during update
+        - Manifest is saved periodically (every RESUME_SAVE_THRESHOLD games)
+        - Games removed from GOG library are automatically removed from manifest
+        - Resume manifest is saved to allow recovery from interruptions
+        - Large libraries may take significant time to update completely
+    """
     media_type = GOG_MEDIA_TYPE_GAME
     items = []
     known_ids = []
@@ -528,11 +814,43 @@ def cmd_update(os_list, lang_list, skipknown, updateonly, partial, ids, skipids,
             cmd_update(save_os_list, save_lang_list, save_skipknown, save_updateonly, save_partial, ids, skipids,skipHidden,save_installers,resumemode,save_strict,save_strictDupe,save_strictDownloadsUpdate,save_strictExtrasUpdate,save_md5xmls,save_noChangeLogs)
 
 
-def cmd_import(src_dir, dest_dir,os_list,lang_list,skipextras,skipids,ids,skipgalaxy,skipstandalone,skipshared,destructive):
-    """Recursively finds all files within root_dir and compares their MD5 values
+def cmd_import(src_dir, dest_dir, os_list, lang_list, skipextras, skipids, ids, skipgalaxy, skipstandalone, skipshared, destructive):
+    """Recursively finds all files within src_dir and compares their MD5 values
     against known md5 values from the manifest.  If a match is found, the file will be copied
     into the game storage dir.
+    
+    Args:
+        src_dir: Source directory to search for files
+        dest_dir: Destination directory where games are stored
+        os_list: List of OS types to include
+        lang_list: List of languages to include
+        skipextras: If True, skip extra content
+        skipids: List of game IDs to exclude
+        ids: List of game IDs to include (empty means all)
+        skipgalaxy: If True, skip Galaxy installers
+        skipstandalone: If True, skip standalone installers
+        skipshared: If True, skip shared installers
+        destructive: If True, move files instead of copying them
     """
+    # Map parameters to GameFilter
+    installers = 'all'
+    if skipgalaxy and skipstandalone and skipshared:
+        installers = 'all'  # All skipped means nothing
+    elif skipgalaxy and skipshared:
+        installers = 'standalone'
+    elif skipstandalone and skipshared:
+        installers = 'galaxy'
+    elif skipgalaxy and skipstandalone:
+        installers = 'shared'
+    
+    game_filter = GameFilter(
+        os_list=os_list,
+        lang_list=lang_list,
+        skip_extras=skipextras,
+        skipids=skipids if skipids else [],
+        ids=ids if ids else [],
+        installers=installers
+    )
     if destructive:
         stringOperation = "move"
         stringOperationP = "moving"
@@ -542,89 +860,7 @@ def cmd_import(src_dir, dest_dir,os_list,lang_list,skipextras,skipids,ids,skipga
     gamesdb = load_manifest()
 
     info("collecting md5 data out of the manifest")
-    size_info = {} #holds dicts of entries with size as key
-    #md5_info = {}  # holds tuples of (title, filename) with md5 as key
-
-    valid_langs = []
-    for lang in lang_list:
-        valid_langs.append(LANG_TABLE[lang])
-        
-    for game in gamesdb:
-        try:
-            _ = game.galaxyDownloads
-        except AttributeError:
-            game.galaxyDownloads = []
-            
-        try:
-            a = game.sharedDownloads
-        except AttributeError:
-            game.sharedDownloads = []
-
-        try:
-            _ = game.folder_name
-        except AttributeError:
-            game.folder_name = game.title
-
-        downloads = game.downloads
-        galaxyDownloads = game.galaxyDownloads
-        sharedDownloads = game.sharedDownloads
-        extras = game.extras
-
-        if skipgalaxy:
-            galaxyDownloads = []
-        if skipstandalone:
-            downloads = []
-        if skipshared:
-            sharedDownloads = []
-        if skipextras:
-            extras = []
-                        
-            
-        if ids and not (game.title in ids) and not (str(game.id) in ids):
-            continue
-        if game.title in skipids or str(game.id) in skipids:
-            continue
-        for game_item in downloads+galaxyDownloads+sharedDownloads:
-            if game_item.md5 is not None:
-                if game_item.lang in valid_langs:
-                    if game_item.os_type in os_list:
-                        try:
-                            md5_info = size_info[game_item.size]
-                        except KeyError:
-                            md5_info = {}
-                        try:
-                            items = md5_info[game_item.md5]
-                        except Exception:
-                            items = {}
-                        try:
-                            entry = items[(game.folder_name,game_item.name)]
-                        except Exception:
-                            entry = game_item
-                        items[(game.folder_name,game_item.name)] = entry
-                        md5_info[game_item.md5] = items
-                        size_info[game_item.size] = md5_info
-        #Note that Extras currently have unusual Lang / OS entries that are also accepted.  
-        valid_langs_extras = valid_langs + [u'']
-        valid_os_extras = os_list + [u'extra']
-        for extra_item in extras:
-            if extra_item.md5 is not None:
-                if extra_item.lang in valid_langs_extras:
-                    if extra_item.os_type in valid_os_extras:            
-                        try:
-                            md5_info = size_info[extra_item.size]
-                        except KeyError:
-                            md5_info = {}
-                        try:
-                            items = md5_info[extra_item.md5]
-                        except Exception:
-                            items = {}
-                        try:
-                            entry = items[(extra_item.folder_name,extra_item.name)]
-                        except Exception:
-                            entry = extra_item
-                        items[(game.folder_name,extra_item.name)] = entry
-                        md5_info[extra_item.md5] = items
-                        size_info[extra_item.size] = md5_info
+    size_info = build_md5_lookup(gamesdb, game_filter)
         
     info("searching for files within '%s'" % src_dir)
     file_list = []
@@ -687,7 +923,42 @@ def cmd_import(src_dir, dest_dir,os_list,lang_list,skipextras,skipids,ids,skipga
                     if changed:
                         save_manifest(gamesdb)
 
-def cmd_clear_partial_downloads(cleandir,dryrun):
+def cmd_clear_partial_downloads(cleandir, dryrun):
+    """Remove incomplete download directories left from interrupted downloads.
+    
+    Cleans up the downloading directory by removing all partially downloaded game
+    directories. This includes both regular download directories and provisional
+    (temporary) directories used during the download process. Use this command
+    to reclaim disk space after interrupted or failed downloads.
+    
+    The function removes:
+    - All subdirectories in DOWNLOADING_DIR_NAME (except PROVISIONAL_DIR_NAME itself)
+    - All subdirectories within PROVISIONAL_DIR_NAME
+    
+    These directories are created during download operations and may be left behind
+    if downloads are interrupted by errors, user cancellation, or system crashes.
+    
+    Args:
+        cleandir: Root directory containing the games folder structure.
+            Typically GAME_STORAGE_DIR. The downloading subdirectory is located
+            at: cleandir/DOWNLOADING_DIR_NAME/
+        dryrun: If True, simulates the deletion without actually removing files.
+            Reports what would be deleted. If False, actually deletes the directories.
+    
+    Notes:
+        - Only removes directories, not individual files in the downloading root
+        - Errors during deletion are logged but don't stop the process
+        - Safe to run - only affects temporary download directories
+        - Does not affect completed downloads that have been moved to game folders
+        - Preserve PROVISIONAL_DIR_NAME directory itself, only its contents
+    
+    Example:
+        >>> cmd_clear_partial_downloads('/path/to/games', dryrun=True)
+        # Shows what would be deleted without actually deleting
+        
+        >>> cmd_clear_partial_downloads('/path/to/games', dryrun=False)
+        # Actually deletes partial download directories
+    """
     downloading_root_dir = os.path.join(cleandir, DOWNLOADING_DIR_NAME)
     for dir in os.listdir(downloading_root_dir):
         if dir != PROVISIONAL_DIR_NAME:
@@ -712,6 +983,62 @@ def cmd_clear_partial_downloads(cleandir,dryrun):
                 error("Failed to delete directory: " + testdir)
 
 def cmd_trash(cleandir,installers,images,dryrun):
+    """Delete orphaned files and directories that were moved by the clean command.
+    
+    Permanently removes content from the orphan directory (ORPHAN_DIR_NAME). The
+    orphan directory contains files and directories moved by cmd_clean when they
+    don't match the current manifest - typically outdated game versions, renamed
+    games, or files marked for update.
+    
+    This command provides granular control over what gets deleted:
+    - Delete only installer files (exe, sh, pkg, dmg, etc.)
+    - Delete only image subdirectories
+    - Delete entire orphan game directories
+    
+    When specific file types are targeted (installers or images), the command will
+    attempt to remove empty directories after deletion, keeping the orphan directory
+    structure clean.
+    
+    Args:
+        cleandir: Root directory containing the games folder structure.
+            Typically GAME_STORAGE_DIR. The orphan subdirectory is located at:
+            cleandir/ORPHAN_DIR_NAME/
+        installers: If True, delete only installer files (exe, sh, pkg, dmg, bin, etc.)
+            from orphan directories. Files are identified by extension using INSTALLERS_EXT.
+            Other files (extras, metadata) are preserved.
+        images: If True, delete only image subdirectories (IMAGES_DIR_NAME) from
+            orphan directories. Installer files and other content are preserved.
+        dryrun: If True, simulates the deletion without actually removing files.
+            Reports what would be deleted. If False, actually deletes the files.
+    
+    Behavior modes:
+        - installers=False, images=False: Deletes entire orphan game directories
+        - installers=True: Deletes only installer files, attempts to clean empty dirs
+        - images=True: Deletes only image folders, attempts to clean empty dirs
+        - installers=True, images=True: Deletes both types, attempts to clean empty dirs
+    
+    Notes:
+        - Only affects content in ORPHAN_DIR_NAME, never touches active game directories
+        - Deletion errors are logged but don't stop the process
+        - Empty directory removal is silent (no error if directory not empty)
+        - Safe to run repeatedly - only deletes what matches the criteria
+        - Complements cmd_clean which moves files to orphan directory
+    
+    Workflow:
+        1. Run cmd_clean to identify and move outdated/unexpected files to orphans
+        2. Review orphaned content to ensure nothing important was moved
+        3. Run cmd_trash to permanently delete the orphaned content
+    
+    Example:
+        >>> cmd_trash('/path/to/games', installers=True, images=False, dryrun=True)
+        # Shows which installer files would be deleted
+        
+        >>> cmd_trash('/path/to/games', installers=False, images=True, dryrun=False)
+        # Actually deletes image folders from orphaned games
+        
+        >>> cmd_trash('/path/to/games', installers=False, images=False, dryrun=False)
+        # Deletes entire orphaned game directories
+    """
     downloading_root_dir = os.path.join(cleandir, ORPHAN_DIR_NAME)
     for dir in os.listdir(downloading_root_dir):
         testdir= os.path.join(downloading_root_dir,dir)
@@ -746,6 +1073,87 @@ def cmd_trash(cleandir,installers,images,dryrun):
                     pass
 
 def cmd_backup(src_dir, dest_dir,skipextras,os_list,lang_list,ids,skipids,skipgalaxy,skipstandalone,skipshared):
+    """Copy game files from source to backup destination, validating against the manifest.
+    
+    Creates a selective backup of your GOG game library by copying only files that
+    exist in the manifest and pass validation checks. This is useful for creating
+    filtered backups (e.g., only Windows games, only specific languages) or for
+    migrating your library to a new location while ensuring file integrity.
+    
+    The function validates each file's size against the manifest before copying,
+    skipping files with unexpected sizes. It also preserves game metadata by
+    copying info and serial files alongside game files.
+    
+    Backup process:
+    1. Load manifest to determine which files should exist
+    2. Apply filters (OS, language, installer type, game IDs)
+    3. For each matching game file in manifest:
+       - Check if source file exists and has correct size
+       - Skip if destination already has file with correct size
+       - Copy file to destination maintaining folder structure
+    4. Copy metadata files (info, serial) for games that were backed up
+    
+    Args:
+        src_dir: Source directory containing game files to backup.
+            Typically the main game storage directory. Files must match
+            the manifest's folder structure (gamedir/filename).
+        dest_dir: Destination directory for backup copies.
+            Will be created if it doesn't exist. Backup maintains the same
+            folder structure as source (dest_dir/game_folder/filename).
+        skipextras: If True, excludes extra/bonus content from backup.
+            Only installers are backed up. Useful for space-limited backups.
+        os_list: List of operating systems to include (e.g., ['windows', 'linux']).
+            Only files for these platforms are backed up.
+        lang_list: List of language codes to include (e.g., ['en', 'de']).
+            Only files for these languages are backed up.
+        ids: List of game titles or IDs to backup. If provided, only these
+            games are processed. Can be game slugs or numeric IDs. Empty list
+            means backup all games.
+        skipids: List of game titles or IDs to exclude from backup.
+            Games in this list are never backed up.
+        skipgalaxy: If True, excludes GOG Galaxy installers from backup.
+        skipstandalone: If True, excludes standalone installers from backup.
+        skipshared: If True, excludes shared installers from backup.
+    
+    Behavior:
+        - Only backs up files that exist in the manifest
+        - Skips files with size mismatches (logs warning)
+        - Skips files already in destination with correct size
+        - Creates destination folders as needed
+        - Copies info.txt and serial.txt if any files were backed up for a game
+        - Non-destructive: never modifies or removes source files
+    
+    Validation:
+        - File size must exactly match manifest size
+        - Files with unexpected sizes are skipped with warning
+        - Missing source files are silently skipped
+    
+    Use cases:
+        - Create platform-specific backups (only Windows or Linux)
+        - Create language-specific backups (only English)
+        - Backup specific games to external drive
+        - Create space-saving backups (skip extras, skip Galaxy)
+        - Migrate library to new location with validation
+    
+    Notes:
+        - Does not verify MD5 checksums (use cmd_verify first if needed)
+        - Overwrites destination files if size differs from manifest
+        - Preserves original folder structure from manifest
+        - Info and serial files copied only if at least one game file was copied
+    
+    Example:
+        >>> cmd_backup('/games', '/backup', skipextras=True, 
+        ...            os_list=['windows'], lang_list=['en'],
+        ...            ids=[], skipids=[], skipgalaxy=True, 
+        ...            skipstandalone=False, skipshared=False)
+        # Backs up Windows English standalone installers, no extras
+        
+        >>> cmd_backup('/games', '/backup/witcher', skipextras=False,
+        ...            os_list=['windows', 'linux'], lang_list=['en', 'de'],
+        ...            ids=['witcher_3'], skipids=[],
+        ...            skipgalaxy=False, skipstandalone=False, skipshared=False)
+        # Backs up only Witcher 3 with all installer types and extras
+    """
     gamesdb = load_manifest()
     
     for game in gamesdb:
@@ -840,6 +1248,93 @@ def cmd_backup(src_dir, dest_dir,skipextras,os_list,lang_list,ids,skipids,skipga
                     shutil.copy(os.path.join(src_game_dir, extra_file), dest_game_dir)
 
 def cmd_clean(cleandir, dryrun):
+    """Identify and move outdated or unexpected files to an orphan directory.
+    
+    Scans the game library directory and compares it against the manifest to find
+    files and directories that shouldn't be there. This includes:
+    - Files not listed in the current manifest (outdated versions)
+    - Files marked for update (force_change flag set by strict mode)
+    - Entire game directories no longer in the manifest
+    - Renamed game directories (handled via game rename detection)
+    
+    Instead of deleting files immediately, they are moved to an orphan directory
+    (ORPHAN_DIR_NAME) for review. This provides a safety net - you can verify the
+    orphaned content before permanently deleting it with cmd_trash.
+    
+    The command is essential for keeping your library synchronized with the manifest
+    after running updates, especially when using strict mode which marks files for
+    re-download when versions change.
+    
+    Cleaning process:
+    1. Load manifest to determine expected files and folders
+    2. Handle game renames (moves renamed directories to new names)
+    3. For each directory in cleandir:
+       - If directory not in manifest: move entire directory to orphans
+       - If directory in manifest: check each file
+         * Files not in manifest: move to orphans
+         * Files marked with force_change=True: move to orphans
+    4. Report total size of orphaned content
+    5. Save updated manifest (clears force_change flags after moving files)
+    
+    Args:
+        cleandir: Root directory containing game folders to scan.
+            Typically GAME_STORAGE_DIR/games. Each subdirectory should correspond
+            to a game's folder_name in the manifest.
+        dryrun: If True, simulates the cleaning without actually moving files.
+            Reports what would be moved and total size. If False, actually moves
+            files to the orphan directory.
+    
+    Behavior:
+        - Non-destructive: moves files instead of deleting them
+        - Preserves original structure in orphan directory (game_folder/file)
+        - Handles filename conflicts with incremental suffixes (_1, _2, etc.)
+        - Excludes special directories (ORPHAN_DIR_NAME, DOWNLOADING_DIR_NAME, etc.)
+        - Excludes special files (info.txt, serial.txt, etc.)
+        - Updates manifest after moving files marked with force_change
+    
+    Force_change handling:
+        When strict mode detects a file version/timestamp change, it sets
+        force_change=True on that file entry. cmd_clean then moves the old
+        file to orphans, making room for the new version to be downloaded.
+        After moving, the flag is cleared and manifest is saved.
+    
+    Safety features:
+        - Orphaned files are moved, not deleted - you can recover mistakes
+        - Dryrun mode shows what would happen without making changes
+        - Excluded directories/files are never touched
+        - Manifest is only saved after successful moves (not in dryrun)
+    
+    Workflow integration:
+        1. Run cmd_update with -strictverify to mark changed files
+        2. Run cmd_clean to move outdated files to orphans
+        3. Review orphaned content to ensure nothing important was moved
+        4. Run cmd_download to fetch new versions
+        5. Run cmd_trash to permanently delete orphaned content (optional)
+        6. Run cmd_verify to confirm integrity
+    
+    Use cases:
+        - Remove outdated game versions after manifest update
+        - Clean up after strict mode detects file changes
+        - Remove games deleted from GOG library
+        - Prepare for re-downloading updated installers
+        - Maintain clean library matching current manifest
+    
+    Notes:
+        - Always backs up important data before cleaning
+        - Review orphaned content before running cmd_trash
+        - Dryrun mode is recommended for first-time users
+        - Game renames are handled automatically (directories renamed, not orphaned)
+        - Info and serial files are preserved unless entire game is orphaned
+    
+    Example:
+        >>> cmd_clean('/games', dryrun=True)
+        # Shows what would be moved without actually moving
+        # Reports total size of files that would be orphaned
+        
+        >>> cmd_clean('/games', dryrun=False)
+        # Actually moves outdated/unexpected files to orphan directory
+        # Updates manifest after moving files marked for change
+    """
     items = load_manifest()
     items_by_title = {}
     total_size = 0  # in bytes
@@ -942,6 +1437,116 @@ def cmd_clean(cleandir, dryrun):
         info('nothing to clean. nice and tidy!')
 
 def cmd_verify(verifdir):
+    """Verify integrity of downloaded game files against the manifest.
+    
+    Performs comprehensive validation of all game installers and extras in your
+    library to ensure they match the manifest exactly. This detects:
+    - Missing files
+    - File size mismatches (corruption or incomplete downloads)
+    - MD5 checksum mismatches (data corruption or tampering)
+    - Corrupt ZIP archives (for Galaxy installers)
+    - Missing executable bits in ZIP files (Galaxy installer issue)
+    
+    The verification process checks each file in the manifest against the actual
+    files on disk, reporting any discrepancies. Use this command after downloading
+    to ensure all files are complete and intact, or periodically to detect bitrot
+    or corruption.
+    
+    Verification checks (in order):
+    1. File existence: Does the file exist on disk?
+    2. File size: Does the size match the manifest exactly?
+    3. ZIP integrity (Galaxy only): Can the ZIP be opened? Are executable bits set?
+    4. MD5 checksum: Does the computed MD5 match the manifest?
+    
+    MD5 computation is expensive, so the function uses a persistent cache
+    (MD5_DB) that stores checksums keyed by filename, size, and modification
+    time. If a file hasn't changed since the last verification, the cached
+    checksum is reused, dramatically speeding up subsequent verifications.
+    
+    Args:
+        verifdir: Root directory containing game folders to verify.
+            Typically GAME_STORAGE_DIR/games. Each subdirectory should correspond
+            to a game's folder_name in the manifest, containing the game's files.
+    
+    Verification behavior:
+        - Skips games with no directory (not downloaded yet)
+        - Checks only installer files (downloads, galaxyDownloads, sharedDownloads)
+        - Stops checking a game at first error (fail-fast per game)
+        - Reports each error with game name and specific issue
+        - Continues to next game after error (doesn't abort entire verification)
+        - Provides summary at end: X/Y games verified with no errors
+    
+    Error types detected:
+        - Missing: File listed in manifest but not found on disk
+        - Size mismatch: File size differs from manifest (corruption/incomplete)
+        - Zip without executable bit: Galaxy ZIP missing Unix permission flags
+        - Corrupt zip: ZIP file cannot be opened or is malformed
+        - I/O error: Cannot read file (permissions, disk errors, etc.)
+        - MD5 mismatch: File contents differ from manifest (corruption/tampering)
+    
+    MD5 cache optimization:
+        The cache key is: filepath.size.mtime.md5
+        - If file size or mtime changes, checksum is recomputed
+        - Otherwise, cached checksum is used (much faster)
+        - Cache persists across runs (shelve database)
+        - Cache is automatically saved when verification completes
+    
+    Galaxy ZIP validation:
+        GOG Galaxy installers are ZIP files that must preserve Unix file permissions
+        (executable bits) for correct installation. This check detects ZIPs created
+        without these permissions, which would fail to install properly on Linux/Mac.
+    
+    Use cases:
+        - Verify downloads after cmd_download completes
+        - Detect file corruption from disk errors or bitrot
+        - Confirm library integrity before backup
+        - Troubleshoot installation issues (corrupt installers)
+        - Periodic health checks of game library
+        - Verify imported files after cmd_import
+    
+    Performance:
+        - First run: Slow (computes MD5 for all files)
+        - Subsequent runs: Fast (uses cached MD5s for unchanged files)
+        - Large files: Slow (MD5 computation is I/O and CPU intensive)
+        - Network drives: Very slow (read entire file over network)
+    
+    Workflow integration:
+        1. Run cmd_update to fetch latest manifest
+        2. Run cmd_download to fetch game files
+        3. Run cmd_verify to confirm all downloads are valid
+        4. If errors found, re-download affected games or restore from backup
+        5. Run cmd_clean to remove any unexpected files
+    
+    Notes:
+        - Only verifies files with MD5 checksums in manifest
+        - Does not verify extras without MD5 (some GOG extras lack checksums)
+        - Does not modify any files or manifest
+        - Safe to run repeatedly - read-only operation
+        - Can be interrupted and rerun (cache persists)
+        - Manifest must be up-to-date (run cmd_update first)
+    
+    Output:
+        For each game:
+        - Errors reported as: GameName "filename": Error description
+        - Success reported as: GameName: OK!
+        
+        Summary at end:
+        - X/Y items verified with no errors
+        - List of games with errors (if any)
+    
+    Example:
+        >>> cmd_verify('/path/to/games')
+        # Verifies all games in library
+        # Reports: 150/152 items verified with no errors
+        # Lists: game_with_error1, game_with_error2
+    
+    Troubleshooting:
+        - "Missing" errors: File not downloaded, rerun cmd_download
+        - "Size mismatch": Incomplete download, delete and rerun cmd_download
+        - "MD5 mismatch": Corrupt file, delete and rerun cmd_download
+        - "Corrupt zip": Download error, delete and rerun cmd_download
+        - "I/O error": Check disk health, file permissions, disk space
+    """
     items = load_manifest()
     if not items:
         error("no items found in manifest. run 'update' first.")

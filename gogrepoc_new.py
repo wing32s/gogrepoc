@@ -29,7 +29,7 @@ from modules.utils import (
 )
 from modules.config import validate_user_id
 from modules.commands import (
-    cmd_login, cmd_update, cmd_import,
+    cmd_login, cmd_update_v2, cmd_import,
     cmd_backup, cmd_verify, cmd_clean,
     cmd_trash, cmd_clear_partial_downloads
 )
@@ -439,7 +439,7 @@ def main(args):
             time.sleep(args.wait * 60 * 60)                
         if not args.installers:
             args.installers = "standalone"
-        cmd_update(args.os, args.lang, args.skipknown, args.updateonly, not args.full, args.ids, args.skipids,args.skiphidden,args.installers,args.resumemode,args.strictverify,args.strictdupe,args.lenientdownloadsupdate,args.strictextrasupdate,args.md5xmls,args.nochangelogs)
+        cmd_update_v2(args.os, args.lang, args.skipknown, args.updateonly, not args.full, args.ids, args.skipids,args.skiphidden,args.installers,args.resumemode,args.strictverify,args.strictdupe,args.md5xmls,args.nochangelogs)
     elif args.command == 'download':
         if (args.id):
             args.ids = [args.id]
@@ -480,7 +480,7 @@ def main(args):
             args.skipstandalone = True
             args.skipgalaxy = True
             args.skipshared = True
-        cmd_import(args.src_dir, args.dest_dir,args.os,args.lang,args.skipextras,args.skipids,args.ids,args.skipgalaxy,args.skipstandalone,args.skipshared,False)
+        cmd_import(args.src_dir, args.dest_dir, args.os, args.lang, args.skipextras, args.skipids, args.ids, args.skipgalaxy, args.skipstandalone, args.skipshared, False)
     elif args.command == 'verify':
         #Hardcode these as false since extras currently do not have MD5s as such skipgames would give nothing and skipextras would change nothing. The logic path and arguments are present in case this changes, though commented out in the case of arguments)
         if args.clean:

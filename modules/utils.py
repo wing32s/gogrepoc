@@ -540,3 +540,119 @@ class Wakelock:
                 self._PMassertion = None
             except Exception:
                 pass
+
+
+def build_md5_lookup(gamesdb, game_filter):
+    """Build a lookup dictionary for MD5 matching during import operations.
+    
+    Creates a nested dictionary structure: size -> md5 -> (folder_name, filename) -> game_item
+    This allows fast lookups when matching files by size and MD5 hash.
+    
+    Args:
+        gamesdb: List of game items from the manifest
+        game_filter: GameFilter object specifying which games/content to include
+        
+    Returns:
+        dict: Nested dictionary mapping file size to MD5 to game items
+        
+    Example structure:
+        {
+            1024: {  # file size in bytes
+                'abc123...': {  # MD5 hash
+                    ('game_folder', 'file.exe'): <game_item_object>
+                }
+            }
+        }
+    """
+    size_info = {}
+    
+    valid_langs = []
+    for lang in game_filter.lang_list:
+        valid_langs.append(LANG_TABLE[lang])
+    
+    for game in gamesdb:
+        # Ensure required attributes exist
+        try:
+            _ = game.galaxyDownloads
+        except AttributeError:
+            game.galaxyDownloads = []
+            
+        try:
+            _ = game.sharedDownloads
+        except AttributeError:
+            game.sharedDownloads = []
+
+        try:
+            _ = game.folder_name
+        except AttributeError:
+            game.folder_name = game.title
+
+        downloads = game.downloads
+        galaxyDownloads = game.galaxyDownloads
+        sharedDownloads = game.sharedDownloads
+        extras = game.extras
+
+        # Apply installer type filtering
+        if game_filter.installers == 'standalone':
+            galaxyDownloads = []
+            sharedDownloads = []
+        elif game_filter.installers == 'galaxy':
+            downloads = []
+            sharedDownloads = []
+        elif game_filter.installers == 'shared':
+            downloads = []
+            galaxyDownloads = []
+        
+        if game_filter.skip_extras:
+            extras = []
+        
+        # Import should_process_game_by_id here to avoid circular imports
+        from .game_filter import should_process_game_by_id
+        if not should_process_game_by_id(game, game_filter):
+            continue
+            
+        # Process downloads (installers)
+        for game_item in downloads + galaxyDownloads + sharedDownloads:
+            if game_item.md5 is not None:
+                if game_item.lang in valid_langs:
+                    if game_item.os_type in game_filter.os_list:
+                        _add_to_md5_lookup(size_info, game_item, game.folder_name)
+        
+        # Process extras (note: extras have more lenient lang/os requirements)
+        valid_langs_extras = valid_langs + [u'']
+        valid_os_extras = game_filter.os_list + [u'extra']
+        for extra_item in extras:
+            if extra_item.md5 is not None:
+                if extra_item.lang in valid_langs_extras:
+                    if extra_item.os_type in valid_os_extras:
+                        _add_to_md5_lookup(size_info, extra_item, game.folder_name)
+    
+    return size_info
+
+
+def _add_to_md5_lookup(size_info, item, folder_name):
+    """Helper function to add an item to the MD5 lookup dictionary.
+    
+    Args:
+        size_info: The size->md5 lookup dictionary to add to
+        item: The game item (download or extra) to add
+        folder_name: The folder name for this game
+    """
+    try:
+        md5_info = size_info[item.size]
+    except KeyError:
+        md5_info = {}
+    
+    try:
+        items = md5_info[item.md5]
+    except Exception:
+        items = {}
+    
+    try:
+        entry = items[(folder_name, item.name)]
+    except Exception:
+        entry = item
+    
+    items[(folder_name, item.name)] = entry
+    md5_info[item.md5] = items
+    size_info[item.size] = md5_info
