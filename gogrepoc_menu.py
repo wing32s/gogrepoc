@@ -606,7 +606,7 @@ def print_menu_help(actions: dict[str, tuple[str, object, str]], selected_key: s
 
 def choose_action(session: dict[str, str | bool]) -> str:
     actions = {
-        "s": ("Session settings", None, "Change session-wide settings such as the user profile, debug output, and logfile behavior."),
+        "0": ("Session settings", None, "Change session-wide settings such as the user profile, debug output, and logfile behavior."),
         "1": ("Login", build_login_args, "Open the GOG login flow in your browser and save a local token for later commands."),
         "2": ("Update manifest", build_update_args, "Fetch your current GOG library and file metadata into the local manifest used by download and verify."),
         "3": ("Browse games in manifest", None, "View the games already stored in your local manifest so you can find titles, slugs, and numeric IDs for filtering."),
@@ -617,7 +617,7 @@ def choose_action(session: dict[str, str | bool]) -> str:
         "8": ("Trash orphaned files", build_trash_args, "Permanently delete orphaned files that were previously moved out of the main managed collection."),
         "9": ("Import existing files", build_import_args, "Scan another directory for files that match the manifest and copy them into the managed collection instead of re-downloading them."),
         "10": ("Backup files", build_backup_args, "Copy files from one managed collection to another location as an incremental backup."),
-        "0": ("Quit", None, "Exit the menu without running another command."),
+        "11": ("Quit", None, "Exit the menu without running another command."),
     }
 
     print("\nGOGRepoC Menu")
@@ -671,9 +671,9 @@ def main() -> int:
     while True:
         choice = choose_action(session)
         match choice:
-            case "0":
+            case "11":
                 return 0
-            case "s":
+            case "0":
                 session = prompt_session_settings(session)
                 print("")
                 continue
