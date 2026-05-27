@@ -131,11 +131,11 @@ class TestCommandLineIdFiltering:
     def test_ids_filter_single_game(self, sample_manifest):
         """Test -ids with single game ID."""
         from modules.download import filter_games_by_id
+        from modules.game_filter import GameFilter
         
         result = filter_games_by_id(
             sample_manifest,
-            ids=[str(sample_manifest[0].id)],
-            skipids=[]
+            GameFilter(ids=[str(sample_manifest[0].id)], skipids=[])
         )
         
         # Should only include the specified game
@@ -145,11 +145,11 @@ class TestCommandLineIdFiltering:
     def test_ids_filter_by_title(self, sample_manifest):
         """Test -ids with game title."""
         from modules.download import filter_games_by_id
+        from modules.game_filter import GameFilter
         
         result = filter_games_by_id(
             sample_manifest,
-            ids=['test_game'],
-            skipids=[]
+            GameFilter(ids=['test_game'], skipids=[])
         )
         
         # Should find game by title
@@ -159,6 +159,7 @@ class TestCommandLineIdFiltering:
     def test_skipids_filter_excludes_game(self, sample_manifest):
         """Test -skipids excludes specified game."""
         from modules.download import filter_games_by_id
+        from modules.game_filter import GameFilter
         from unittest.mock import Mock
         
         # Add a second game so the list isn't empty after filtering
@@ -169,8 +170,7 @@ class TestCommandLineIdFiltering:
         
         result = filter_games_by_id(
             manifest,
-            ids=[],
-            skipids=[str(sample_manifest[0].id)]
+            GameFilter(ids=[], skipids=[str(sample_manifest[0].id)])
         )
         
         # Should exclude the specified game
@@ -181,6 +181,8 @@ class TestCommandLineIdFiltering:
     def test_ids_filter_multiple_games(self, sample_manifest):
         """Test -ids with multiple game IDs."""
         from modules.download import filter_games_by_id
+        from modules.game_filter import GameFilter
+        from unittest.mock import Mock
         
         # Add a second game to manifest
         game2 = Mock()
@@ -190,8 +192,7 @@ class TestCommandLineIdFiltering:
         
         result = filter_games_by_id(
             manifest,
-            ids=['123456', '234567'],
-            skipids=[]
+            GameFilter(ids=[str(sample_manifest[0].id), '234567'], skipids=[])
         )
         
         # Should include both games
@@ -220,12 +221,12 @@ class TestCommandLineCombinedFilters:
     def test_all_filters_applied(self, sample_manifest, sample_game_item):
         """Test that ID, OS, and language filters all work together."""
         from modules.download import filter_games_by_id, filter_downloads_by_os_and_lang
+        from modules.game_filter import GameFilter
         
         # First filter by game ID
         games = filter_games_by_id(
             sample_manifest,
-            ids=[str(sample_manifest[0].id)],
-            skipids=[]
+            GameFilter(ids=[str(sample_manifest[0].id)], skipids=[])
         )
         assert len(games) == 1
         
@@ -248,7 +249,7 @@ class TestCommandLineArgumentParsing:
     
     def test_parse_download_os_option(self):
         """Test parsing -os option for download command."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         # Mock sys.argv
         test_args = ['gogrepoc.py', 'download', '-os', 'windows', 'linux']
@@ -256,7 +257,7 @@ class TestCommandLineArgumentParsing:
         with patch.object(sys, 'argv', test_args):
             args = process_argv(test_args)
         """Test parsing -lang option."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'download', '-lang', 'en', 'de']
         
@@ -265,7 +266,7 @@ class TestCommandLineArgumentParsing:
     
     def test_parse_ids_option(self):
         """Test parsing -ids option."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'download', '-ids', '123456', '789012']
         
@@ -275,7 +276,7 @@ class TestCommandLineArgumentParsing:
     
     def test_parse_skipids_option(self):
         """Test parsing -skipids option."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'download', '-skipids', '123456']
         
@@ -285,7 +286,7 @@ class TestCommandLineArgumentParsing:
     
     def test_mutually_exclusive_ids_skipids(self):
         """Test that -ids and -skipids are mutually exclusive."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'download', '-ids', '123', '-skipids', '456']
         
@@ -296,7 +297,7 @@ class TestCommandLineArgumentParsing:
     
     def test_mutually_exclusive_os_skipos(self):
         """Test that -os and -skipos are mutually exclusive."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'download', '-os', 'windows', '-skipos', 'linux']
         
@@ -307,7 +308,7 @@ class TestCommandLineArgumentParsing:
     
     def test_parse_skipgalaxy_flag(self):
         """Test parsing -skipgalaxy flag."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'download', '-skipgalaxy']
         
@@ -320,7 +321,7 @@ class TestCommandLineArgumentParsing:
     
     def test_parse_skipextras_flag(self):
         """Test parsing -skipextras flag."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'download', '-skipextras']
         
@@ -333,7 +334,7 @@ class TestCommandLineArgumentParsing:
     
     def test_parse_dryrun_flag(self):
         """Test parsing -dryrun flag."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'download', '-dryrun']
         
@@ -346,7 +347,7 @@ class TestCommandLineArgumentParsing:
     
     def test_parse_wait_option(self):
         """Test parsing -wait option."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'download', '-wait', '2.5']
         
@@ -359,7 +360,7 @@ class TestCommandLineArgumentParsing:
     
     def test_parse_downloadlimit_option(self):
         """Test parsing -downloadlimit option."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'download', '-downloadlimit', '1024.5']
         
@@ -376,7 +377,7 @@ class TestUpdateCommandOptions:
     
     def test_parse_full_flag(self):
         """Test parsing -full flag for update command."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'update', '-full']
         
@@ -389,7 +390,7 @@ class TestUpdateCommandOptions:
     
     def test_parse_updateonly_flag(self):
         """Test parsing -updateonly flag."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'update', '-updateonly']
         
@@ -402,7 +403,7 @@ class TestUpdateCommandOptions:
     
     def test_mutually_exclusive_update_modes(self):
         """Test that update mode flags are mutually exclusive."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'update', '-full', '-updateonly']
         
@@ -417,7 +418,7 @@ class TestVerifyCommandOptions:
     
     def test_parse_skipmd5_flag(self):
         """Test parsing -skipmd5 flag."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'verify', '-skipmd5']
         
@@ -430,7 +431,7 @@ class TestVerifyCommandOptions:
     
     def test_parse_skipsize_flag(self):
         """Test parsing -skipsize flag."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'verify', '-skipsize']
         
@@ -443,7 +444,7 @@ class TestVerifyCommandOptions:
     
     def test_parse_delete_flag(self):
         """Test parsing -delete flag."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'verify', '-delete']
         
@@ -456,7 +457,7 @@ class TestVerifyCommandOptions:
     
     def test_mutually_exclusive_delete_noclean(self):
         """Test that -delete and -noclean are mutually exclusive."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'verify', '-delete', '-noclean']
         

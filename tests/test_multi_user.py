@@ -268,7 +268,7 @@ class TestCommandLineUserArgument:
     
     def test_parse_user_argument(self):
         """Test parsing --user argument."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         # --user comes BEFORE the subcommand
         test_args = ['gogrepoc.py', '--user', 'alice', 'login']
@@ -279,7 +279,7 @@ class TestCommandLineUserArgument:
     
     def test_default_user_none(self):
         """Test that default user is None when --user not specified."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         test_args = ['gogrepoc.py', 'login']
         args = process_argv(test_args)
@@ -289,7 +289,7 @@ class TestCommandLineUserArgument:
     
     def test_user_argument_on_all_commands(self):
         """Test that --user works on all commands."""
-        from gogrepoc_new import process_argv
+        from gogrepoc import process_argv
         
         commands = ['login', 'update', 'download', 'verify']
         

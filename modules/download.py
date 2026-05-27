@@ -28,8 +28,7 @@ from .utils import (
     HTTP_TIMEOUT, HTTP_RETRY_COUNT, HTTP_RETRY_DELAY,
     HTTP_GAME_DOWNLOADER_THREADS,
     GENERIC_READ, GENERIC_WRITE, OPEN_EXISTING, CREATE_NEW, FILE_BEGIN,
-    WINDOWS_PREALLOCATION_FS, POSIX_PREALLOCATION_FS,
-    uLongPathPrefix
+    WINDOWS_PREALLOCATION_FS, POSIX_PREALLOCATION_FS
 )
 from .api import makeGOGSession, request, request_head, fetch_chunk_tree, renew_token, check_and_renew_token
 from .manifest import load_manifest, save_manifest, handle_game_renames
@@ -648,7 +647,6 @@ def download_game_images(item, item_homedir, item_orphandir, backgrounds, covers
         - Migrates from legacy single bg_url to new multi-resolution structure
         - Cleans up old bg_url directory if it exists (move to orphan or delete)
         - Downloads all available background resolutions using download_image_from_item_keys
-        - Windows Python 2: Applies long path prefix for paths > 260 characters
         
         Background Image Download (Legacy):
         - Falls back to item.bg_url if bg_urls attribute doesn't exist (AttributeError)
@@ -665,11 +663,6 @@ def download_game_images(item, item_homedir, item_orphandir, backgrounds, covers
         - Other Exceptions: Logs warning but continues (download failures are non-fatal)
         - Critical errors (old image removal): Logs error and re-raises to stop download
         
-        Windows Long Path Support:
-        - For Python 2 on Windows, prepends uLongPathPrefix to paths exceeding 260 chars
-        - Applies to: old bg_url directory path and orphan directory path
-        - Enables handling of deeply nested directory structures
-    
     Important Notes:
         - Non-Blocking Failures: Image download failures don't prevent game file downloads
         - Migration Logic: Automatically handles transition from old single bg_url to new
@@ -752,16 +745,12 @@ def download_game_images(item, item_homedir, item_orphandir, backgrounds, covers
     try:
         if len(item.bg_urls) != 0 and backgrounds:
             images_old_bg_url_dir_name = os.path.join(images_dir_name, "bg_url")
-            modified_image_orphandir = image_orphandir  
-            if (platform.system() == "Windows" and sys.version_info[0] < 3):
-                images_old_bg_url_dir_name = uLongPathPrefix + os.path.abspath(images_old_bg_url_dir_name)
-                modified_image_orphandir = uLongPathPrefix + os.path.abspath(modified_image_orphandir)
             if os.path.exists(images_old_bg_url_dir_name):
                 try:
                     if clean_old_images:
-                        if not os.path.exists(modified_image_orphandir):
-                            os.makedirs(modified_image_orphandir)
-                        move_with_increment_on_clash(images_old_bg_url_dir_name, modified_image_orphandir)
+                        if not os.path.exists(image_orphandir):
+                            os.makedirs(image_orphandir)
+                        move_with_increment_on_clash(images_old_bg_url_dir_name, image_orphandir)
                     else:
                         shutil.rmtree(images_old_bg_url_dir_name)
                 except Exception as e:
@@ -1032,8 +1021,7 @@ def download_image_from_item_key(item, key, images_dir_name, image_orphandir, cl
     
     Purpose:
         Fetch and save a game image (cover art or background) from GOG's CDN based on a
-        URL stored in the manifest item. Handles old image cleanup, directory creation,
-        and Windows long path support for legacy Python 2 compatibility.
+        URL stored in the manifest item. Handles old image cleanup and directory creation.
     
     Args:
         item: Game manifest item containing image URL fields. Accessed as dictionary.
@@ -1063,11 +1051,6 @@ def download_image_from_item_key(item, key, images_dir_name, image_orphandir, cl
         - Splits relative path into directory and filename components
         - Handles nested directory structures from CDN paths
         
-        Windows Long Path Support (Python 2):
-        - On Windows with Python < 3, prepends uLongPathPrefix to all paths
-        - Enables handling of paths exceeding 260 character limit
-        - Applies to: file path, directory path, orphan directory
-        
         Old Image Cleanup:
         - Checks if image key directory already exists
         - If exists and clean_existing=True: Moves to orphan directory with increment
@@ -1092,8 +1075,6 @@ def download_image_from_item_key(item, key, images_dir_name, image_orphandir, cl
         - Preservation vs Deletion: clean_existing flag determines whether old images are
           preserved (orphan directory) or permanently deleted. Preservation is safer but
           consumes more disk space.
-        - Windows Compatibility: Long path prefix handling is only needed for Python 2 on
-          Windows. Python 3 handles long paths natively.
         - Skip Existing: Function silently skips download if file already exists, making
           it safe to call multiple times without re-downloading.
         - Directory Creation: Automatically creates all necessary parent directories
@@ -1168,12 +1149,6 @@ def download_image_from_item_key(item, key, images_dir_name, image_orphandir, cl
     key_local_path_dir = os.path.join(images_key_dir_name, dir) 
     key_local_path_file = os.path.join(key_local_path_dir, file) 
     modified_images_key_dir_name = images_key_dir_name
-    
-    #if (platform.system() == "Windows" and sys.version_info[0] < 3):
-    #    key_local_path_file = uLongPathPrefix + os.path.abspath(key_local_path_file)
-    #    key_local_path_dir = uLongPathPrefix + os.path.abspath(key_local_path_dir)
-    #    image_orphandir = uLongPathPrefix + os.path.abspath(image_orphandir)
-    #    modified_images_key_dir_name = uLongPathPrefix + os.path.abspath(modified_images_key_dir_name)
         
     if not os.path.exists(key_local_path_file):
         if os.path.exists(modified_images_key_dir_name):
@@ -1360,27 +1335,15 @@ def download_image_from_item_keys(item, keys, images_dir_name, image_orphandir, 
         leading_partial_key_local_path_dir = os.path.join(images_key_dir_name, leading_partial_key_local_path)
         validPaths.append(leading_partial_key_local_path)
         (trailing_partial_key_local_path_dir, trailing_partial_key_local_path_file) = os.path.split(partial_key_local_path)
-        longpath_safe_leading_partial_key_local_path_dir = leading_partial_key_local_path_dir
-        
-        #if (platform.system() == "Windows" and sys.version_info[0] < 3):
-        #    longpath_safe_leading_partial_key_local_path_dir = uLongPathPrefix + os.path.abspath(longpath_safe_leading_partial_key_local_path_dir)
-            
-        if not os.path.exists(longpath_safe_leading_partial_key_local_path_dir):
-            os.makedirs(longpath_safe_leading_partial_key_local_path_dir)
+        if not os.path.exists(leading_partial_key_local_path_dir):
+            os.makedirs(leading_partial_key_local_path_dir)
             
         full_key_local_path_dir = os.path.join(leading_partial_key_local_path_dir, trailing_partial_key_local_path_dir)
         full_key_local_path_file = os.path.join(full_key_local_path_dir, trailing_partial_key_local_path_file)
         key_url = 'https://' + partial_key_local_path
-        
-        #if (platform.system() == "Windows" and sys.version_info[0] < 3):
-        #    full_key_local_path_file = uLongPathPrefix + os.path.abspath(full_key_local_path_file)
-        #    full_key_local_path_dir = uLongPathPrefix + os.path.abspath(full_key_local_path_dir)
-            
         if not os.path.exists(full_key_local_path_file):
             if os.path.exists(full_key_local_path_dir):
                 images_full_key_local_path_orphandir = os.path.join(images_key_orphandir_name, leading_partial_key_local_path)
-                #if (platform.system() == "Windows" and sys.version_info[0] < 3):
-                #    images_full_key_local_path_orphandir = uLongPathPrefix + os.path.abspath(images_full_key_local_path_orphandir)
                 try:
                     if clean_existing:
                         if not os.path.exists(images_full_key_local_path_orphandir):
@@ -1404,9 +1367,6 @@ def download_image_from_item_keys(item, keys, images_dir_name, image_orphandir, 
         if potential_old_folder not in validPaths:
             potential_old_folder_path = os.path.join(images_key_dir_name, potential_old_folder)
             try:
-                #if (platform.system() == "Windows" and sys.version_info[0] < 3):
-                #    potential_old_folder_path = uLongPathPrefix + os.path.abspath(potential_old_folder_path)
-                #    images_key_orphandir_name = uLongPathPrefix + os.path.abspath(images_key_orphandir_name)
                 if clean_existing:
                     if not os.path.exists(images_key_orphandir_name):
                         os.makedirs(images_key_orphandir_name)
@@ -1465,7 +1425,6 @@ def preallocate_file(file_path, target_size, skip_preallocation):
         POSIX Preallocation (Linux):
         - Checks filesystem type using get_fs_type(file_path)
         - Only proceeds if filesystem is in POSIX_PREALLOCATION_FS list (ext4, xfs, etc.)
-        - Requires Python 3 (os.posix_fallocate only available in Python 3)
         - Determines open mode based on file existence:
           * "r+b": File exists (resume scenario)
           * "wb": File doesn't exist (new download)
@@ -1602,15 +1561,14 @@ def preallocate_file(file_path, target_size, skip_preallocation):
         # POSIX systems (Linux, etc.)
         fs = get_fs_type(file_path)
         if fs.lower() in POSIX_PREALLOCATION_FS:
-            if sys.version_info[0] >= 3:
-                info("preallocating '%d' bytes for '%s' using posix_fallocate" % (target_size, file_path))
-                # Use appropriate open mode based on whether file exists
-                open_mode = "r+b" if os.path.exists(file_path) else "wb"
-                with open(file_path, open_mode) as f:
-                    try:
-                        os.posix_fallocate(f.fileno(), 0, target_size)
-                    except Exception:    
-                        warn("posix preallocation failed")
+            info("preallocating '%d' bytes for '%s' using posix_fallocate" % (target_size, file_path))
+            # Use appropriate open mode based on whether file exists
+            open_mode = "r+b" if os.path.exists(file_path) else "wb"
+            with open(file_path, open_mode) as f:
+                try:
+                    os.posix_fallocate(f.fileno(), 0, target_size)
+                except Exception:    
+                    warn("posix preallocation failed")
 
 def download_file_chunk(downloading_path, href, start, end, sz, path, sizes, lock, downloadSession, tid, rates):
     """Download a single chunk of a file with automatic retry logic and manifest mismatch detection.
